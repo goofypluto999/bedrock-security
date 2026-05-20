@@ -204,6 +204,69 @@ aud-mismatch → all rejected with 401.
 
 ---
 
+## 5b. Token-purpose confusion — the multi-token / 2FA-bypass class
+
+> Found in a real audit: a HIGH-severity 2FA bypass that five separate reviewers
+> (including a strong general code review) missed — only a pass specifically
+> tracing *token purpose across the auth flow* caught it. It's subtle, common, and
+> devastating, so it gets its own entry.
+
+**The setup:** an app mints several JWT *types* — an **access token**, a
+**2FA-challenge token** (the "you passed the password, now do TOTP" interstitial),
+a **password-reset token**, an **email-verify token**, a magic-link token, etc.
+For convenience they're all signed with the **same secret + same algorithm**, and
+several of them carry the user/tenant identity (`sub`, `role`, `user_id`) because
+the next step needs it.
+
+**The failure mode:** the general access-token validator
+(`decode_token` / `get_current_user`) checks **signature + expiry only — it never
+checks what the token is *for*.** So a token minted for one purpose is accepted as
+another. The worst case:
+
+- User has 2FA on. Attacker has the password (the *exact* threat 2FA exists to
+  stop — phishing, reuse, breach).
+- Attacker logs in → server returns `200 {requires_2fa: true, challenge_id: <JWT>}`.
+- The `challenge_id` is signed with the auth secret and carries a valid `sub`.
+- Attacker sends `Authorization: Bearer <challenge_id>` to any protected route.
+- The access validator sees a valid signature + unexpired token with a `sub` →
+  **authenticates the attacker as the full user. TOTP entirely skipped.**
+
+The same bug lets a password-reset or email-verify token act as a session, or a
+low-scope token act as a high-scope one. A docstring that *says* "a `purpose`
+claim prevents this" is worthless if the validator doesn't actually read it.
+
+**Fix — make purpose a hard, checked invariant:**
+- **Stamp every token with a `purpose`/`typ` claim** (`access`, `2fa_challenge`,
+  `pw_reset`, `email_verify`, …).
+- **Each consumer requires its own purpose.** The access path rejects any token
+  whose purpose isn't `access`; the 2FA endpoint requires `2fa_challenge`; etc.
+  Don't just check the special path — the *access* path must reject the special
+  tokens.
+- **Non-breaking rollout:** if existing access tokens have *no* purpose claim and
+  every special token *does*, the immediate, zero-logout fix is: in the access
+  path, reject any token where `purpose` is present and != `access`. (Access
+  tokens have no purpose → still accepted; challenge/reset tokens are rejected.)
+  Then, as a follow-up, start stamping `purpose:"access"` and require it.
+- **Stronger:** sign different token classes with **different secrets/keys** so a
+  cross-class token fails signature verification outright. Belt-and-braces over
+  the claim check.
+- **Bind to a session where it matters:** if your revocation check is a no-op when
+  a `jti` is absent (a common "legacy token" fallback), a `jti`-less special token
+  also skips revocation — another reason the purpose check must be explicit.
+
+**Test (make this a permanent regression):** mint each non-access token type and
+send it as a `Bearer` to a protected route → every one must **401**. Add the 2FA
+case specifically: complete `/login`, take the `challenge_id`, use it as a Bearer
+→ 401, not 200. **Oracle:** OWASP API2:2023 (Broken Authentication); RFC 8725
+§3.11 ("use explicit typing" / distinguish token types).
+
+**How to catch this class in review:** grep every JWT-minting site, list the
+*purposes*, then grep every `jwt.decode`/validator and confirm each enforces the
+purpose it expects. The bug lives in the gap between "we mint 4 token types" and
+"the validator checks 1 property (signature)."
+
+---
+
 ## 6. Secret leakage in logs / errors / emails (CWE-532)
 
 **Generic advice:** "don't log secrets."

@@ -167,3 +167,53 @@ Do not report "security tested" until:
 - the suite is order-independent (passes randomized),
 - and the oracles are cited in each test so a reviewer can verify *correctness*,
   not just *passing*.
+
+## 8. Running a full audit — multi-lens, multi-agent, with cross-checking
+
+A one-pass review misses things. A real internal audit layers *independent* lenses
+so each catches what the others don't. The proven structure:
+
+1. **Frame the surface first.** Inventory every endpoint, auth mode, external call,
+   secret, and data store before going deep. You can't audit what you haven't
+   enumerated.
+2. **Pick a rubric** (this skill's gates + control matrix) and score against it —
+   don't free-associate.
+3. **Run multiple lenses in sequence:** a checklist pass, a controls pass, an
+   unsafe-pattern pass. They overlap deliberately; overlap is how you catch the
+   thing one lens is blind to.
+4. **Parallelize by domain with fresh-context agents.** Split the audit into
+   independent domains (authn/authz, rate-limit/secrets, LLM/input,
+   SSRF/webhook/idempotency, test-coverage) and have a *separate* reviewer do each.
+   Fresh context = no shared assumptions. Give each the relevant rubric section and
+   the real code, demand file:line evidence per claim, and a severity per finding.
+5. **Run a dedicated purpose-tracing pass.** The highest-value bugs (e.g. the
+   token-purpose confusion in `hardening-playbook.md §5b`) are found by *tracing a
+   property across the whole flow*, not by per-file review. Budget one pass that
+   does nothing but follow auth/identity/trust across boundaries.
+6. **Finish with an independent automated pass** (an AI security-review action or
+   equivalent) and **cross-check** it against the human/agent findings — each tends
+   to catch what the other misses. In the real audit this skill is built from, a
+   HIGH-severity 2FA bypass was found *only* by the dedicated purpose-tracing
+   automated pass; five other capable reviewers missed it. Use all the lenses.
+
+**Cross-checking is mandatory, in both directions:**
+- An agent that reports "control X is missing" may be reading **stale docs**, not
+  the current code. **Verify every 'missing' claim against the live code** before
+  acting — one audit agent flagged four controls as "unimplemented" purely from
+  out-of-date triage notes; all four were actually shipped and live.
+- Conversely, an agent that reports "✅ present" should cite the file:line so you
+  can confirm it's wired on *every* relevant route, not just one.
+
+## 9. Stale security docs are an audit hazard
+
+Triage logs, test docstrings, and design notes describing controls as "TODO /
+Class-1 / unimplemented" **rot the moment the control ships**. Then:
+- a future auditor (human or agent) reads the stale note and reports a *fixed*
+  control as a live vulnerability (false positive, wasted remediation), or
+- a green-looking test that's documented as an "expected-FAIL" gets "fixed" to pass
+  without fixing the product, silently destroying the only red flag.
+
+**Rule:** when you fix a control, update or delete the doc that called it broken in
+the *same change*. A test whose docstring says "this is expected to fail because
+the control doesn't exist" must be rewritten the moment the control exists — the
+docstring is part of the test's correctness.

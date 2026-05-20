@@ -136,6 +136,10 @@ unless you've actually measured and equalized it.
       debit are atomic (single guarded UPDATE), not check-then-act.
 - [ ] Auth-failure throttling is tested at the **documented threshold** with
       *valid-shaped* credentials (so input validation doesn't mask the test).
+- [ ] Every JWT *type* (access / 2FA-challenge / password-reset / email-verify) is
+      tested as a `Bearer` on a protected route — only the access token is accepted,
+      all others **401** (token-purpose confusion → 2FA/auth bypass; see
+      `hardening-playbook.md §5b`).
 - [ ] No secret format (key, token, hash, password) can appear in logs, alerts,
       error bodies, or LLM outputs — tested with planted secrets (CWE-532).
 - [ ] Every security control has a **kill switch** and a **documented
