@@ -1,0 +1,153 @@
+---
+name: bedrock-security
+description: >
+  Second-order application security playbook — the hardening, testing, and
+  decision-making that comes AFTER the obvious OWASP/checklist pass. Auto-fire
+  whenever the user is setting up, reviewing, hardening, or testing the security
+  of an app/API/service: authn/authz, rate limiting, secrets & env management,
+  multi-tenant isolation (BOLA/IDOR), billing/quota race conditions, login
+  lockout, JWT hardening, security headers, LLM/AI guardrails & prompt-injection,
+  CI security tests, and secure deploy/ops. Use it when generic "use HTTPS,
+  hash passwords, parameterize queries" advice is NOT enough — when the goal is
+  production-grade, adversary-tested security with falsifiable tests and explicit
+  fail-open/fail-closed decisions.
+triggers:
+  - cybersecurity
+  - security setup
+  - secure my app
+  - harden
+  - hardening
+  - security review
+  - security audit
+  - penetration
+  - pentest
+  - threat model
+  - rate limit
+  - rate limiting
+  - bola
+  - idor
+  - broken access control
+  - multi-tenant security
+  - secrets management
+  - env vars
+  - environment variables
+  - jwt
+  - auth security
+  - login lockout
+  - brute force
+  - prompt injection
+  - llm security
+  - ai guardrails
+  - guardrails
+  - security testing
+  - security tests
+  - owasp
+  - secure deploy
+  - api security
+---
+
+# Bedrock Security
+
+**The security layer that comes *after* the obvious checks.**
+
+Generic security advice (use HTTPS, hash passwords, parameterize queries, follow
+OWASP Top 10) is the floor, not the ceiling. This skill encodes the *second-order*
+practices that separate "passed a checklist" from "survives a motivated attacker
+and a 3am incident" — earned the hard way shipping a real multi-tenant SaaS to
+production.
+
+## How to use this skill
+
+1. **Read this entry file** for the philosophy + the decision frameworks (they
+   apply to every security task).
+2. **Pull the relevant reference doc** for depth — don't dump all four into
+   context at once:
+   - `references/security-testing-methodology.md` — how to *prove* security with
+     falsifiable, isolated tests (and why your own tests lie to you by default).
+   - `references/hardening-playbook.md` — the core controls + their non-obvious
+     failure modes (BOLA status leaks, rate-limit bypasses, race conditions, JWT,
+     lockout, headers, CWE-532).
+   - `references/more-controls.md` — the rounding-out controls: SSRF, inbound
+     webhook signature verification, timing-safe comparison, idempotency keys,
+     request-size/decompression limits, dependency/supply-chain, audit-log
+     integrity, CSRF/cookie nuance for SPAs.
+   - `references/ai-llm-security.md` — prompt-injection, output scrubbing, fail-open
+     guards, kill-switches, and cost-aware escalation (cheap regex → managed
+     guardrails).
+   - `references/secrets-and-ops.md` — secrets/env storage, deploy footguns, and
+     the fail-open vs fail-closed decision.
+3. **Apply the gates below** before declaring anything "secure".
+
+## The core philosophy (read this every time)
+
+### 1. Your own tests lie to you by default
+The single biggest security-testing failure is **the author grading their own
+homework**: you write the code, then write a test that asserts the code does what
+you already believe it does. That test passes whether or not the code is *secure*
+— it only proves the code is *consistent with your assumption*. Real security
+tests are **falsifiable** and **adversarial**: each one is anchored to an external
+oracle (an OWASP entry, an RFC clause, a CWE id) and tries to *break* the system,
+not confirm it. See `security-testing-methodology.md`.
+
+### 2. Every security control needs a documented failure mode
+For each control, you must be able to answer: *"What happens when this fails — and
+is failing OPEN or CLOSED the right call?"* An auth check fails closed (deny). A
+rate limiter or an LLM guardrail usually fails open (allow + alert) so a bug in the
+*defense* can't take down the *product*. Pick deliberately; never let it be an
+accident. See the fail-open/closed framework in `secrets-and-ops.md`.
+
+### 3. Security that's too expensive gets turned off
+A control that doubles your per-request cost or adds a second of latency will be
+disabled the first time it's inconvenient. Cheap-but-80%-effective beats
+expensive-but-99%-that-gets-removed. Always cost the control (latency, $, ops
+burden) and prefer the cheapest layer that meets the threat. Escalate to expensive
+controls only when the threat model justifies it — and document the trigger.
+
+### 4. Every new control ships with an off-switch
+Any control that can block a legitimate user (lockout, guardrail, WAF rule) needs
+an **env-flag kill switch** so it can be disabled in seconds during an incident
+*without a code change or redeploy*. If you can't turn it off fast, you can't
+turn it on safely.
+
+### 5. The response itself is part of the attack surface
+`403 Forbidden` vs `404 Not Found` on a resource you don't own *leaks the
+resource's existence*. Differential responses are an oracle attackers enumerate:
+in rough order of how cheaply they're exploited — **status code → error text →
+body length → timing**. Equalize them in that priority order. Status/text/length
+are easy and you should always match them ("indistinguishable from never-existed"
+is the bar). **Timing is the hardest** to equalize and rarely worth chasing for
+ordinary CRUD authz — a scoped DB query for a missing row vs an owned row can
+differ by microseconds, and fully constant-time DB access is impractical. Reserve
+timing-attack defense (constant-time compare, artificial delays) for the places it
+genuinely matters: secret/token/HMAC comparison (use a constant-time compare — see
+`hardening-playbook.md`), and auth flows where a measurable
+user-exists-vs-not delta enables enumeration. Don't claim "timing-indistinguishable"
+unless you've actually measured and equalized it.
+
+## Gates — do not call something "secure" until all pass
+
+- [ ] Every access-control path is tested with a **second identity** trying to
+      reach the first's data (BOLA/IDOR), and the denial is **indistinguishable
+      from "resource doesn't exist"** (same status, body, timing class).
+- [ ] Every rate limit is tested by **rotating the spoofable identifier**
+      (X-Forwarded-For, X-Real-IP) — the limit must hold on the *authenticated*
+      identity, not the source IP alone.
+- [ ] Every quota/balance debit is tested **concurrently** — the check and the
+      debit are atomic (single guarded UPDATE), not check-then-act.
+- [ ] Auth-failure throttling is tested at the **documented threshold** with
+      *valid-shaped* credentials (so input validation doesn't mask the test).
+- [ ] No secret format (key, token, hash, password) can appear in logs, alerts,
+      error bodies, or LLM outputs — tested with planted secrets (CWE-532).
+- [ ] Every security control has a **kill switch** and a **documented
+      fail-open/closed** decision.
+- [ ] Security tests **pass in a clean batch run**, not just in isolation — a
+      "passes alone, fails in CI" result is a test-isolation defect that hides
+      real regressions (see Anti-pattern #13).
+- [ ] Secrets live in the platform's secret store, never in the repo, never in
+      client-visible URLs/params, never echoed back to the caller.
+
+## What this skill deliberately does NOT re-explain
+
+The generic floor — TLS everywhere, bcrypt/argon2 for passwords, parameterized
+queries, CSRF tokens, the OWASP Top 10 definitions, "validate all input". Assume
+those are done. This skill is about everything *after* that.

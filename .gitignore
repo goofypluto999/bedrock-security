@@ -1,0 +1,26 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local preview / scratch
+.claude/
+assets/_preview.html
+*.tmp
+
+# Never commit secrets (this repo has none — belt and braces)
+.env
+.env.*
+*.pem
+*.key
+credentials*.json
+
+# Knowledge-management / second-brain stores (never publish)
+brain/
+second-brain/
+.obsidian/
+vault/
+memory/

@@ -1,0 +1,71 @@
+<svg width="1280" height="320" viewBox="0 0 1280 320" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bedrock Security — the security layer that comes after the checklist">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A0E14"/>
+      <stop offset="0.55" stop-color="#0D131C"/>
+      <stop offset="1" stop-color="#0A0E14"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5EEAD4"/>
+      <stop offset="1" stop-color="#7DD3FC"/>
+    </linearGradient>
+    <linearGradient id="strata" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1E293B"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1280" height="320" fill="url(#bg)"/>
+
+  <!-- faint hex grid (right side) -->
+  <g opacity="0.08" stroke="#5EEAD4" stroke-width="1">
+    <path d="M980 40 l40 0 l20 35 l-20 35 l-40 0 l-20 -35 z"/>
+    <path d="M1060 40 l40 0 l20 35 l-20 35 l-40 0 l-20 -35 z"/>
+    <path d="M1020 110 l40 0 l20 35 l-20 35 l-40 0 l-20 -35 z"/>
+    <path d="M1100 110 l40 0 l20 35 l-20 35 l-40 0 l-20 -35 z"/>
+    <path d="M980 180 l40 0 l20 35 l-20 35 l-40 0 l-20 -35 z"/>
+    <path d="M1060 180 l40 0 l20 35 l-20 35 l-40 0 l-20 -35 z"/>
+    <path d="M1140 180 l40 0 l20 35 l-20 35 l-40 0 l-20 -35 z"/>
+  </g>
+
+  <!-- bedrock strata + shield emblem (left) -->
+  <g transform="translate(96 86)">
+    <!-- strata layers -->
+    <rect x="-8" y="120" width="156" height="20" rx="3" fill="url(#strata)"/>
+    <rect x="4"  y="96"  width="132" height="20" rx="3" fill="url(#strata)"/>
+    <rect x="14" y="72"  width="112" height="20" rx="3" fill="url(#strata)"/>
+    <!-- shield -->
+    <path d="M70 0 L130 22 V70 C130 110 104 134 70 148 C36 134 10 110 10 70 V22 Z"
+          fill="#0E1622" stroke="url(#accent)" stroke-width="3"/>
+    <!-- check / keystone mark -->
+    <path d="M46 72 L64 92 L98 50" fill="none" stroke="url(#accent)" stroke-width="7"
+          stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  </g>
+
+  <!-- wordmark -->
+  <g transform="translate(280 0)">
+    <text x="0" y="150" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+          font-size="76" font-weight="800" letter-spacing="-1.5" fill="#F1F5F9">BEDROCK</text>
+    <text x="362" y="150" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+          font-size="76" font-weight="300" letter-spacing="-1.5" fill="url(#accent)">SECURITY</text>
+
+    <!-- tagline -->
+    <text x="2" y="196" font-family="'Segoe UI', Arial, sans-serif" font-size="23"
+          font-weight="500" fill="#94A3B8">The security layer that comes <tspan fill="#5EEAD4">after</tspan> the checklist.</text>
+
+    <!-- mono code strip -->
+    <g font-family="'JetBrains Mono','Consolas',monospace" font-size="15.5" fill="#64748B">
+      <text x="2" y="240"><tspan fill="#5EEAD4">$</tspan> assert deny(other_tenant) == not_found  <tspan fill="#475569"># 404, never 403</tspan></text>
+      <text x="2" y="266"><tspan fill="#5EEAD4">$</tspan> debit WHERE balance &gt;= cost           <tspan fill="#475569"># atomic, no TOCTOU</tspan></text>
+      <text x="2" y="292"><tspan fill="#5EEAD4">$</tspan> guard.fail_open() &amp;&amp; kill_switch=ENV    <tspan fill="#475569"># defense != outage</tspan></text>
+    </g>
+  </g>
+
+  <!-- hairline -->
+  <rect x="0" y="318" width="1280" height="2" fill="url(#accent)" opacity="0.5"/>
+</svg>
