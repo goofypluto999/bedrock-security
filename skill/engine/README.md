@@ -33,6 +33,26 @@ Outputs `LEDGER.md` (human) and `ledger.json` (machine) in the out dir.
 
 Dependency: `pip install pyyaml`. Everything else is Python stdlib.
 
+## The console (live local app)
+
+```bash
+python engine/server.py [TARGET_DIR] [--port 8765] [--no-open] [--run-commands]
+```
+
+`server.py` reuses this engine and adds a **live UI** (`../ui/index.html`, served at
+`http://127.0.0.1:8765/`) plus a human-approval gate — the two-phase flow:
+
+1. **Triage** (`/api/triage/stream`, SSE) — walks every check one at a time, live:
+   green = applies · red = N/A · amber = judgement (each with file:line evidence).
+2. **Approve** (`/api/approve`) — the UI groups the applicable+judgement set with
+   ADD/REMOVE checkboxes; you approve the final selection.
+3. **Run** (`/api/run/stream`, SSE) — proves the approved set, streaming PASS / FAIL /
+   NEEDS-PROOF (with the proof-template path) per check, then the gated verdict.
+
+Same `registry.yaml`, same `evaluate()`, same gate as the headless runner — the
+console is just the watch-it-happen surface over it. Stdlib `http.server` + SSE; the
+only dependency is still PyYAML.
+
 ---
 
 ## The check record schema

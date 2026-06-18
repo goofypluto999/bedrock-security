@@ -57,6 +57,16 @@ python skill/engine/sweep.py <target-repo>      # add --run-commands for scanner
 - **`skill/templates/`** — runnable adversarial proofs for Python/FastAPI, TypeScript/
   Node, and Supabase/Postgres.
 
+**Prefer to watch it work?** Launch the local **console** — a live UI that walks every
+check one at a time (green = _applies_ · red = _N/A_ · amber = _judgement_), lets you
+**add / remove / approve** the selection, then runs the proofs and streams the verdict:
+
+```bash
+python skill/engine/server.py <target-repo>     # opens http://127.0.0.1:8765
+```
+
+Same registry, same gate as the headless runner — just the watch-it-happen surface.
+
 ## What's inside
 
 | File | What it covers |
@@ -67,7 +77,8 @@ python skill/engine/sweep.py <target-repo>      # add --run-commands for scanner
 | [`skill/references/ai-llm-security.md`](skill/references/ai-llm-security.md) | **LLM/AI security**: the two attack directions, the cost-aware escalation ladder (cheap regex → managed guardrails), a zero-dependency Tier-1 guard pattern, fail-open + kill-switch design, and the ReDoS check every regex guard needs. |
 | [`skill/references/secrets-and-ops.md`](skill/references/secrets-and-ops.md) | **Secrets, env & secure ops**: the fail-open vs fail-closed decision table, secrets/env do's & don'ts, the deploy footguns (wrong account, push≠deploy, local-ahead divergence, multi-worker state), and incident-time muscle memory. |
 | [`skill/references/more-controls.md`](skill/references/more-controls.md) | The rounding-out controls: **SSRF**, inbound **webhook signature verification**, **timing-safe comparison**, **idempotency keys**, **request-size/decompression limits**, **dependency/supply-chain** hygiene, **audit-log integrity**, and **CSRF/cookie nuance for SPAs**. |
-| [`skill/engine/`](skill/engine) | **The sweep engine** — `registry.yaml` (76 structured checks), `sweep.py` (the gated runner), and the schema/probe reference. |
+| [`skill/engine/`](skill/engine) | **The sweep engine + live console** — `registry.yaml` (76 structured checks), `sweep.py` (the gated runner), `server.py` (the local console server), and the schema/probe reference. |
+| [`skill/ui/`](skill/ui) | **The live console dashboard** — a single-file UI: watch the AI triage every check (green/red/amber), approve the selection, then run the proofs and see the verdict, all streamed. |
 | [`skill/PROTOCOL.md`](skill/PROTOCOL.md) | The **forced, ordered procedure** that drives a sweep and gates the "secure" claim. |
 | [`skill/templates/`](skill/templates) | **Per-stack adversarial proof templates** (pytest+httpx · vitest+supertest · Supabase RLS/SQL). |
 | [`skill/references/framework-mappings.md`](skill/references/framework-mappings.md) | Every check crosswalked to **OWASP Top 10 / API Top 10, MITRE ATT&CK, NIST CSF, D3FEND, ATLAS, AI RMF**. |

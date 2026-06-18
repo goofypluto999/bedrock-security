@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bedrock Security — live sweep console</title>
+<style>
+  :root{
+    --bg:#0a0d14; --panel:#10151f; --panel2:#0d121b; --line:#1d2533;
+    --txt:#e6edf3; --dim:#8b97a7; --mute:#5b677a;
+    --teal:#5eead4; --green:#3fb950; --red:#f85149; --amber:#d6a019; --blue:#58a6ff; --purple:#bc8cff;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);font-size:14px;line-height:1.4}
+  a{color:var(--teal)}
+  header{position:sticky;top:0;z-index:10;background:linear-gradient(180deg,#0a0d14 70%,rgba(10,13,20,.85));
+    border-bottom:1px solid var(--line);padding:14px 20px;backdrop-filter:blur(6px)}
+  .brand{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .logo{font-weight:700;letter-spacing:.5px}
+  .logo b{color:var(--teal)}
+  .target{font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+  .chip{font-size:11px;font-family:var(--mono);padding:2px 8px;border:1px solid var(--line);border-radius:20px;color:var(--dim)}
+  .steps{display:flex;gap:8px;margin-top:10px;font-size:12px}
+  .step{padding:3px 10px;border-radius:6px;border:1px solid var(--line);color:var(--mute)}
+  .step.on{color:var(--bg);background:var(--teal);border-color:var(--teal);font-weight:600}
+  .bar{margin-top:10px;display:flex;align-items:center;gap:14px}
+  .progress{flex:1;height:6px;background:#0d121b;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .progress > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--teal),var(--blue));transition:width .15s}
+  .counts{display:flex;gap:12px;font-family:var(--mono);font-size:12px}
+  .counts span{color:var(--dim)}
+  .counts b{font-variant-numeric:tabular-nums}
+  .g{color:var(--green)} .r{color:var(--red)} .a{color:var(--amber)} .p{color:var(--purple)} .b{color:var(--blue)}
+  .actions{display:flex;gap:10px;margin-top:12px}
+  button{font-family:var(--sans);font-size:13px;font-weight:600;cursor:pointer;border-radius:7px;
+    border:1px solid var(--line);background:var(--panel);color:var(--txt);padding:8px 16px;transition:.15s}
+  button:hover{border-color:var(--teal)}
+  button.primary{background:var(--teal);color:#06231f;border-color:var(--teal)}
+  button.primary:hover{filter:brightness(1.08)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  main{padding:18px 20px;max-width:1500px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--line);
+    border-radius:9px;padding:12px;transition:.2s;opacity:.62}
+  .card.done{opacity:1}
+  .card.scanning{border-left-color:var(--blue);animation:pulse 1s infinite}
+  .card.green{border-left-color:var(--green);opacity:1}
+  .card.red{border-left-color:var(--red);opacity:.5}
+  .card.amber{border-left-color:var(--amber);opacity:1}
+  .card.PASS{border-left-color:var(--green)} .card.FAIL{border-left-color:var(--red);opacity:1}
+  .card[data-run="NEEDS-PROOF"]{border-left-color:var(--purple);opacity:1}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(88,166,255,.0)}50%{box-shadow:0 0 0 3px rgba(88,166,255,.12)}}
+  .card .h{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .id{font-family:var(--mono);font-size:12px;color:var(--teal);font-weight:600}
+  .sev{font-size:10px;font-family:var(--mono);text-transform:uppercase;padding:1px 6px;border-radius:4px;border:1px solid var(--line);color:var(--dim)}
+  .sev.critical{color:var(--red);border-color:#5b2226} .sev.high{color:var(--amber);border-color:#5c4a13}
+  .sev.medium{color:var(--blue);border-color:#1e3a5c} .sev.low,.sev.info{color:var(--mute)}
+  .pill{margin-left:auto;font-size:11px;font-family:var(--mono);padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--mute)}
+  .pill.green{color:var(--green);border-color:#1c3a22} .pill.red{color:var(--red);border-color:#3a1c1f}
+  .pill.amber{color:var(--amber);border-color:#3a3113} .pill.scanning{color:var(--blue);border-color:#1e3a5c}
+  .pill.PASS{color:var(--green)} .pill.FAIL{color:var(--red)} .pill[data-s="NEEDS-PROOF"]{color:var(--purple);border-color:#3a2a52}
+  .ttl{font-size:13px;font-weight:600;margin:2px 0 8px}
+  pre.code{font-family:var(--mono);font-size:11px;color:var(--dim);background:var(--panel2);border:1px solid var(--line);
+    border-radius:6px;padding:8px;white-space:pre-wrap;margin:0;overflow:hidden;max-height:118px}
+  .ev{margin-top:7px;font-family:var(--mono);font-size:10.5px;color:var(--mute);word-break:break-all}
+  .domain{font-size:10px;font-family:var(--mono);color:var(--mute)}
+  /* approve panel */
+  #approve{display:none;margin:0 0 18px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  #approve h2{margin:0 0 4px;font-size:16px}
+  #approve .sub{color:var(--dim);font-size:13px;margin-bottom:12px}
+  .agroup{margin-bottom:12px}
+  .agroup h3{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin:0 0 6px;font-family:var(--mono)}
+  .arow{display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:6px}
+  .arow:hover{background:var(--panel2)}
+  .arow label{display:flex;align-items:center;gap:9px;cursor:pointer;flex:1}
+  .arow .aid{font-family:var(--mono);font-size:12px;color:var(--teal);min-width:130px}
+  .arow .at{font-size:12px;color:var(--dim)}
+  input[type=checkbox]{width:15px;height:15px;accent-color:var(--teal);cursor:pointer}
+  #verdict{display:none;margin:0 0 16px;padding:14px 18px;border-radius:10px;font-size:15px;font-weight:600;border:1px solid var(--line)}
+  #verdict.green{background:#0d1f14;border-color:#1c3a22;color:var(--green)}
+  #verdict.red{background:#1f0d0f;border-color:#3a1c1f;color:var(--red)}
+  .hint{color:var(--mute);font-size:12px;margin-top:4px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo"><b>BEDROCK</b> SECURITY · live sweep console</span>
+    <span class="target" id="target">—</span>
+    <span class="chips" id="stacks"></span>
+  </div>
+  <div class="steps">
+    <span class="step on" id="s1">1 · Triage (applies?)</span>
+    <span class="step" id="s2">2 · Approve selection</span>
+    <span class="step" id="s3">3 · Full run (prove)</span>
+  </div>
+  <div class="bar">
+    <div class="progress"><i id="prog"></i></div>
+    <div class="counts" id="counts">
+      <span>checks <b id="c-total">0</b></span>
+      <span class="g">applies <b id="c-green">0</b></span>
+      <span class="r">N/A <b id="c-red">0</b></span>
+      <span class="a">judge <b id="c-amber">0</b></span>
+    </div>
+  </div>
+  <div class="actions">
+    <button class="primary" id="btn-triage">▶ Start triage</button>
+    <button id="btn-approve" disabled>Approve &amp; run →</button>
+    <span class="hint" id="hint">Walks every check, one by one, deciding what applies to this project.</span>
+  </div>
+</header>
+
+<main>
+  <div id="verdict"></div>
+  <section id="approve"></section>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const cards = {};        // id -> card element
+let CHECKS = [], TOTAL = 0, done = 0;
+const counts = {green:0, red:0, amber:0};
+
+function setStep(n){ for(const i of [1,2,3]) $('#s'+i).classList.toggle('on', i<=n); }
+
+async function init(){
+  const st = await (await fetch('/api/state')).json();
+  $('#target').textContent = st.target;
+  $('#stacks').innerHTML = (st.stacks||[]).map(s=>`<span class="chip">${s}</span>`).join('')
+     + `<span class="chip">${st.total} checks</span>`
+     + (st.run_commands?'<span class="chip">--run-commands</span>':'');
+  CHECKS = st.checks; TOTAL = st.total; $('#c-total').textContent = TOTAL;
+  const grid = $('#grid');
+  for(const c of CHECKS){
+    const el = document.createElement('div');
+    el.className = 'card'; el.id = 'card-'+c.id;
+    el.innerHTML = `
+      <div class="h">
+        <span class="id">${c.id}</span>
+        <span class="sev ${c.severity}">${c.severity||''}</span>
+        <span class="pill" data-pill>idle</span>
+      </div>
+      <div class="ttl">${esc(c.title)}</div>
+      <pre class="code">${esc(c.summary)}</pre>
+      <div class="ev" data-ev></div>`;
+    grid.appendChild(el); cards[c.id] = el;
+  }
+}
+function esc(s){return (s||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+
+function bump(){ done++; $('#prog').style.width = (done/TOTAL*100)+'%'; }
+
+$('#btn-triage').onclick = () => {
+  $('#btn-triage').disabled = true; done=0; counts.green=counts.red=counts.amber=0;
+  $('#hint').textContent = 'AI is walking every check…';
+  const es = new EventSource('/api/triage/stream');
+  es.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if(m.type === 'triage'){
+      const el = cards[m.id]; if(!el) return;
+      el.className = 'card done ' + m.light;
+      const pill = el.querySelector('[data-pill]');
+      pill.className = 'pill ' + m.light;
+      pill.textContent = {green:'applies', red:'N/A', amber:'judgement'}[m.light];
+      if(m.evidence && m.evidence.length) el.querySelector('[data-ev]').textContent = m.evidence.join('  ·  ');
+      else if(m.reason) el.querySelector('[data-ev]').textContent = m.reason.slice(0,90);
+      counts[m.light]++; ['green','red','amber'].forEach(k=>$('#c-'+k).textContent=counts[k]);
+      bump();
+    } else if(m.type === 'done'){
+      es.close();
+      $('#prog').style.width='100%';
+      buildApprove(m.preselect);
+    }
+  };
+  es.onerror = () => { es.close(); $('#btn-triage').disabled=false; };
+};
+
+function buildApprove(preselect){
+  setStep(2);
+  $('#btn-approve').disabled = false;
+  $('#hint').textContent = 'Review the selection — add or remove — then run.';
+  const sel = new Set(preselect);
+  const groups = {green:[], amber:[], red:[]};
+  for(const c of CHECKS){
+    const el = cards[c.id];
+    const light = el.classList.contains('green')?'green':el.classList.contains('amber')?'amber':'red';
+    groups[light].push(c);
+  }
+  const labels = {green:'Applies — included', amber:'Judgement calls — included by default', red:'Not applicable — add back if needed'};
+  let html = `<h2>Approve the selection</h2>
+    <div class="sub">The AI included <b class="g">${groups.green.length}</b> applicable +
+    <b class="a">${groups.amber.length}</b> judgement checks, excluded <b class="r">${groups.red.length}</b> as N/A.
+    Toggle any, then approve to run the full proof pass.</div>`;
+  for(const k of ['green','amber','red']){
+    if(!groups[k].length) continue;
+    html += `<div class="agroup"><h3 class="${k[0]}">${labels[k]} (${groups[k].length})</h3>`;
+    for(const c of groups[k]){
+      const ck = sel.has(c.id) ? 'checked' : '';
+      html += `<div class="arow"><label>
+        <input type="checkbox" data-id="${c.id}" ${ck}>
+        <span class="aid">${c.id}</span><span class="at">${esc(c.title)}</span></label></div>`;
+    }
+    html += `</div>`;
+  }
+  const ap = $('#approve'); ap.innerHTML = html; ap.style.display='block';
+  updateApproveCount();
+  ap.querySelectorAll('input').forEach(i=>i.onchange=updateApproveCount);
+  ap.scrollIntoView({behavior:'smooth'});
+}
+function updateApproveCount(){
+  const n = document.querySelectorAll('#approve input:checked').length;
+  $('#btn-approve').textContent = `Approve & run → (${n})`;
+}
+
+$('#btn-approve').onclick = async () => {
+  const ids = [...document.querySelectorAll('#approve input:checked')].map(i=>i.dataset.id);
+  await fetch('/api/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved:ids})});
+  $('#approve').style.display='none'; $('#btn-approve').disabled=true; setStep(3);
+  $('#hint').textContent = 'Running the full proof pass on the approved set…';
+  // reset visuals for the run on approved cards
+  done=0; const approvedSet=new Set(ids);
+  for(const c of CHECKS){ if(approvedSet.has(c.id)){ const p=cards[c.id].querySelector('[data-pill]'); p.className='pill scanning'; p.textContent='queued'; } }
+  TOTAL = ids.length; $('#prog').style.width='0%';
+  const es = new EventSource('/api/run/stream');
+  es.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if(m.type==='run'){
+      const el = cards[m.id]; if(!el) return;
+      el.className = 'card done ' + (m.status==='PASS'?'PASS':m.status==='FAIL'?'FAIL':'amber');
+      el.setAttribute('data-run', m.status);
+      const pill = el.querySelector('[data-pill]');
+      pill.className = 'pill'; pill.setAttribute('data-s', m.status);
+      pill.textContent = {PASS:'PASS', FAIL:'FAIL', 'NEEDS-PROOF':'prove ▸', NA:'N/A'}[m.status]||m.status;
+      let ev = (m.evidence||[]).join('  ·  ');
+      if(m.status==='NEEDS-PROOF'){
+        const t = Object.values(m.templates||{})[0];
+        ev = t ? ('proof template → '+t) : (m.reason||'author proof');
+      } else if(m.status==='FAIL'){ ev = (m.fail_action||ev); }
+      el.querySelector('[data-ev]').textContent = ev;
+      bump();
+    } else if(m.type==='verdict'){
+      es.close();
+      const v = $('#verdict'); v.style.display='block';
+      v.className = m.green ? 'green' : 'red';
+      v.textContent = m.green
+        ? `✓ GREEN — every approved check proven (PASS ${m.counts.PASS} · N/A ${m.counts.NA})`
+        : `✗ RED — ${m.open} open: FAIL ${m.counts.FAIL} · needs-proof ${m.counts['NEEDS-PROOF']} · PASS ${m.counts.PASS}`;
+      v.scrollIntoView({behavior:'smooth'});
+      $('#hint').textContent = 'Close OPEN items with evidence (templates / fixes), then re-run.';
+    }
+  };
+  es.onerror = ()=>es.close();
+};
+
+init();
+</script>
+</body>
+</html>

@@ -65,6 +65,13 @@ production.
 This skill is an **executable enforcement system**, not just a reading. When the
 task is a security sweep / audit / hardening / "is this secure?", you run it:
 
+> **Two ways to run it:**
+> - **The console (live local app):** `python engine/server.py <target>` opens a UI in
+>   the browser that walks **every** check live — green = applies, red = N/A, amber =
+>   judgement — lets you **ADD / REMOVE / approve** the selection, then runs the proofs
+>   on the approved set, all streamed. Same registry, same gate. (`ui/index.html`.)
+> - **Headless:** `python engine/sweep.py <target>` for CI / a one-shot gated ledger.
+
 1. **Drive it with `PROTOCOL.md`.** The forced, ordered procedure — Frame →
    Applicability → Static → Adversarial → Decision → Triage → Verdict. Top to bottom;
    you do not skip stages and you do not declare "secure" until its §7 bar passes.
