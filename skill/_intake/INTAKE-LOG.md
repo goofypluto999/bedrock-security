@@ -16,3 +16,18 @@ dropped. Drop media in `_intake/media/` (gitignored) or just paste it.
 | 2026-06-18 | `mukul975/Anthropic-Cybersecurity-Skills` (754 skills, Apache-2.0) | app-sec techniques absent from registry + 5-framework mapping | 12 new checks + 2 reference docs + catalogue | XXE/SSTI/NOSQLI/REDIRECT/PATHTRAV/HOSTHDR/CLICKJACK/WEBSOCKET/EXCESSDATA/APIINV/OAUTH/CISEC-001 + `framework-mappings.md` + `cyber-skills-catalog.md` |
 
 _Source media staged in `_intake/media/` (gitignored). Transcripts + frame montages were the extraction inputs (both, per the intake contract)._
+
+**Verification pass — 2026-06-18 (persisted + re-checked):** all 6 reels were (re)downloaded
+with `yt-dlp`, transcribed with `faster-whisper` (`reelN_*.txt`), and frame-montaged with
+`ffmpeg` (`reelN_*_montage.jpg`) — all in `_intake/media/` (gitignored). Every derived check
+was re-verified against **both** the transcript **and** the frames:
+- reel1 on-screen captions match the 5 items exactly (LocalStorage token · client-side admin ·
+  2FA/OTP · missing rate limits · password pattern checks).
+- reel4 (pt) audio confirms NEXT_PUBLIC/Vercel envs · source maps · `.env`→`.gitignore` ·
+  no token/PII in localStorage · HttpOnly+Secure cookies · sessionStorage auto-clear · CORS/CSP.
+- reel5 audio = the Postman unauth test; the **frames** show the on-screen security-guide TOC
+  ("Refresh Token Rotation", "Row-Level Security (RLS)", "Logout & Session Invalidation",
+  "Supabase Auth") — confirming SUPABASE-RLS-001 / TOKEN-ROTATE-001 are grounded in the video.
+- reels 2/3/6 audio fully matches their derivations.
+Conclusion: the prior extraction was accurate; no check changes required. Provenance is now
+proven, not assumed.
