@@ -24,3 +24,9 @@ second-brain/
 .obsidian/
 vault/
 memory/
+
+# bedrock engine artifacts
+__pycache__/
+*.pyc
+.bedrock/
+_intake/media/

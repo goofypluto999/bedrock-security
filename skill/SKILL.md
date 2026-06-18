@@ -10,7 +10,11 @@ description: >
   CI security tests, and secure deploy/ops. Use it when generic "use HTTPS,
   hash passwords, parameterize queries" advice is NOT enough — when the goal is
   production-grade, adversary-tested security with falsifiable tests and explicit
-  fail-open/fail-closed decisions.
+  fail-open/fail-closed decisions. Runs as an executable system: a machine-readable
+  check registry, a runner (engine/sweep.py) that frames the target and gates the
+  result, a forced step-by-step procedure (PROTOCOL.md), and per-stack proof
+  templates — it PROVES each applicable control rather than claiming it, and skips
+  nothing unless proven not-applicable.
 triggers:
   - cybersecurity
   - security setup
@@ -56,27 +60,49 @@ practices that separate "passed a checklist" from "survives a motivated attacker
 and a 3am incident" — earned the hard way shipping a real multi-tenant SaaS to
 production.
 
-## How to use this skill
+## How to use this skill — run the system, don't freestyle
 
-1. **Read this entry file** for the philosophy + the decision frameworks (they
-   apply to every security task).
-2. **Pull the relevant reference doc** for depth — don't dump all four into
-   context at once:
+This skill is an **executable enforcement system**, not just a reading. When the
+task is a security sweep / audit / hardening / "is this secure?", you run it:
+
+1. **Drive it with `PROTOCOL.md`.** The forced, ordered procedure — Frame →
+   Applicability → Static → Adversarial → Decision → Triage → Verdict. Top to bottom;
+   you do not skip stages and you do not declare "secure" until its §7 bar passes.
+2. **Run the engine.** `python engine/sweep.py <target>` frames the attack surface,
+   runs every static probe, and emits a **gated ledger** (`.bedrock/LEDGER.md`): one
+   row per check — APPLICABLE? · PASS / FAIL / N-A / NEEDS-PROOF · evidence · oracle.
+   It **exits non-zero while any applicable check is unproven** — that exit code is
+   the enforcement. (`engine/registry.yaml` is the single source of truth for all
+   checks; `engine/README.md` explains the schema and probe types.)
+3. **Close every OPEN item with PROOF, not a claim.** For each applicable adversarial
+   check, copy its per-stack template from `templates/`, wire it to the real routes
+   from the frame, and run it. PASS requires an *artifact* — a passing falsifiable
+   test, a live probe, a command exit, or a cited `file:line`. Never "I reviewed it."
+4. **Pull the reference doc** for the depth behind any check (don't load all five at
+   once):
    - `references/security-testing-methodology.md` — how to *prove* security with
      falsifiable, isolated tests (and why your own tests lie to you by default).
    - `references/hardening-playbook.md` — the core controls + their non-obvious
      failure modes (BOLA status leaks, rate-limit bypasses, race conditions, JWT,
      lockout, headers, CWE-532).
-   - `references/more-controls.md` — the rounding-out controls: SSRF, inbound
-     webhook signature verification, timing-safe comparison, idempotency keys,
-     request-size/decompression limits, dependency/supply-chain, audit-log
-     integrity, CSRF/cookie nuance for SPAs.
+   - `references/more-controls.md` — SSRF, inbound webhook signature verification,
+     timing-safe comparison, idempotency keys, request-size/decompression limits,
+     dependency/supply-chain, audit-log integrity, CSRF/cookie nuance for SPAs.
    - `references/ai-llm-security.md` — prompt-injection, output scrubbing, fail-open
-     guards, kill-switches, and cost-aware escalation (cheap regex → managed
-     guardrails).
-   - `references/secrets-and-ops.md` — secrets/env storage, deploy footguns, and
-     the fail-open vs fail-closed decision.
-3. **Apply the gates below** before declaring anything "secure".
+     guards, kill-switches, and cost-aware escalation (cheap regex → managed guardrails).
+   - `references/secrets-and-ops.md` — secrets/env storage, deploy footguns, and the
+     fail-open vs fail-closed decision.
+   - `references/framework-mappings.md` — every check crosswalked to OWASP Top 10 /
+     API Top 10, MITRE ATT&CK, NIST CSF, D3FEND, ATLAS, AI RMF (compliance reporting).
+   - `references/cyber-skills-catalog.md` — the 754-skill DFIR/offensive corpus
+     (mukul975, Apache-2.0) captured by reference: which techniques became checks,
+     and how to pull an investigation/pentest playbook on demand.
+5. **The completion bar is `PROTOCOL.md §7` + a GREEN ledger.** The gates below are
+   the at-a-glance summary; the engine is what enforces them.
+
+To **add a check** from a video / short / image / thread you send me, see
+`MEDIA-INTAKE.md` — each is extracted, oracle-anchored, formalized into a registry
+record, validated, and logged. Nothing you send is dropped.
 
 ## The core philosophy (read this every time)
 
@@ -126,6 +152,10 @@ unless you've actually measured and equalized it.
 
 ## Gates — do not call something "secure" until all pass
 
+> These gates are now encoded as records in `engine/registry.yaml` and enforced by
+> the ledger (`sweep.py` exits non-zero while any is open). The authoritative,
+> ordered completion bar is `PROTOCOL.md §7`; the list below is the at-a-glance summary.
+
 - [ ] Every access-control path is tested with a **second identity** trying to
       reach the first's data (BOLA/IDOR), and the denial is **indistinguishable
       from "resource doesn't exist"** (same status, body, timing class).
@@ -155,3 +185,18 @@ unless you've actually measured and equalized it.
 The generic floor — TLS everywhere, bcrypt/argon2 for passwords, parameterized
 queries, CSRF tokens, the OWASP Top 10 definitions, "validate all input". Assume
 those are done. This skill is about everything *after* that.
+
+## Apex over the floor (how this relates to the other security skills)
+
+Bedrock is the **apex** security system; the basic skills are its **Tier-0 floor**:
+- `owasp-top-10` — the A01–A10 definitions + baseline mitigations.
+- `security-guidance` — generic input-validation / secrets / common-vuln guidance.
+- `security-hardening` — starter FastAPI snippets (rate limit, Pydantic, CORS/headers).
+
+The engine still **confirms** the floor (the `FLOOR-*` records) so "assumed" never
+silently means "absent". Where a floor skill teaches a pattern this skill considers
+unsafe, **bedrock wins and the floor is corrected** — specifically the naive
+in-memory rate limiter keyed on `request.client.host` (see `PATTERN-001` /
+`hardening-playbook.md §3`) and the `403`-on-others'-objects existence leak (see
+`PATTERN-002` / `hardening-playbook.md §1`). Those floor skills now carry a pointer
+back here so the contradiction can't mislead a future pass.

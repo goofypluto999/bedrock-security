@@ -1,0 +1,1781 @@
+# ===========================================================================
+#  BEDROCK SECURITY — CHECK REGISTRY  (single source of truth)
+# ===========================================================================
+#  This file is the heart of the sweep engine. Every security check the system
+#  knows about lives here as one structured record. The prose in references/*.md
+#  is the DEPTH; this registry is the ENFORCEABLE INDEX the runner + protocol act on.
+#
+#  Nothing is "skipped". For every applicable check the engine demands one of:
+#    PASS         - proven, with an evidence artifact attached (not a claim)
+#    FAIL         - proven broken, with the artifact that broke it
+#    NA           - proven not-applicable to THIS project, with the probe that showed it
+#  A check left as NEEDS-PROOF blocks a green verdict. That is the whole point.
+#
+#  To ADD a check (e.g. from a video/short/image you send me): append one record
+#  following the schema below. See MEDIA-INTAKE.md for the extraction contract.
+# ===========================================================================
+
+meta:
+  schema_version: 1
+  registry_version: "2026.06.18-1"
+  # The fixed engine stages, run in this order (see PROTOCOL.md). Checks are
+  # bucketed by `phase`; the stages below operate over those buckets.
+  stages:
+    - id: frame          # Stage 0 — enumerate the attack surface (can't audit the unenumerated)
+    - id: applicability  # Stage 1 — for EVERY check: applies to this project? prove yes/no
+    - id: static         # Stage 2 — automated/static proofs the runner can execute itself
+    - id: adversarial    # Stage 3 — falsifiable adversarial tests (templates per stack)
+    - id: decision       # Stage 4 — forced documented decisions (fail-open/closed, kill-switch)
+    - id: triage         # Stage 5 — classify every red into Class 1-5
+    - id: verdict        # Stage 6 — emit the ledger; gate the "secure" claim
+  # Clusters/domains — the "fragmented + clustered" grouping.
+  domains:
+    - access-control       # BOLA/IDOR/BFLA, mass-assignment, multi-tenant isolation
+    - authn-session-jwt    # login, sessions, JWT hardening, token-purpose
+    - rate-abuse           # rate limiting, lockout, brute-force, quota races
+    - secrets-logging      # secret storage, leak prevention (CWE-532), audit log
+    - injection-input      # SQL/XSS/cmd injection, input validation, size/DoS limits
+    - llm-ai               # prompt injection, output scrub, guard fail-open
+    - ssrf-webhook-idem    # SSRF, inbound webhook verification, idempotency, timing-safe
+    - headers-cors-csrf    # security headers, CORS, CSRF posture by transport
+    - deps-supplychain     # dependency audit, lockfiles, pinned actions, secret-scan
+    - deploy-ops           # deploy target, fail-mode, rollback, multi-worker, smoke
+    - client-exposure      # frontend/build-time leakage (client env, localStorage, source maps)
+  # Proof methods — the "answer/test system" each check resolves through.
+  methods:
+    - inventory          # produce an enumeration artifact (Stage 0)
+    - static-scan        # runner executes a probe (grep/AST/command/file) and captures output
+    - adversarial-test   # author + run a falsifiable test from a per-stack template
+    - decision           # produce a documented decision artifact (and a kill-switch where blocking)
+  severities: [critical, high, medium, low, info]
+  # Status legend used in the verdict ledger.
+  statuses:
+    PASS: proven present/correct with an attached evidence artifact
+    FAIL: proven broken with an attached artifact
+    NA: proven not-applicable to this project, with the probe that showed it
+    NEEDS-PROOF: applicable but not yet proven — BLOCKS a green verdict
+  # auto_probe.type values the runner (sweep.py) implements:
+  #   grep_present   — pattern(s) found => surface EXISTS => check is APPLICABLE
+  #   antipattern    — pattern(s) found => an immediate FAIL (known-bad code)
+  #   file_present   — path glob exists (e.g. lockfile, .gitignore)
+  #   file_absent    — path glob MUST exist; missing => FAIL/NEEDS-PROOF
+  #   command        — run a shell command; interpret exit code / output
+  #   manual         — runner cannot decide => NEEDS-PROOF (agent must close with evidence)
+
+checks:
+
+  # =========================================================================
+  # STAGE 0 — FRAME & INVENTORY  (method: inventory)
+  #   You cannot audit what you have not enumerated. These produce the surface
+  #   map every later stage references.
+  # =========================================================================
+
+  - id: INV-001
+    title: Enumerate every route/endpoint and its auth mode
+    domain: access-control
+    phase: frame
+    severity: info
+    method: inventory
+    oracle: [OWASP API Security Top 10 2023]
+    applicability:
+      question: Does the project expose HTTP routes / serverless functions / RPC handlers?
+      auto_probe:
+        type: grep_present
+        patterns: ['@app\.(get|post|put|patch|delete)', 'APIRouter', 'app\.(get|post|put|patch|delete)\(', 'export (async )?function (GET|POST|PUT|PATCH|DELETE)', 'createServer', 'fastify', 'express\(']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Produce a table: method+path, auth requirement (none/cookie/bearer/JWT-type),
+        owning role, and whether it reads or mutates owned objects. Every later
+        access-control / authz check iterates this table.
+    pass_criteria: A complete route inventory artifact exists; no route is "unknown auth".
+    ref: references/security-testing-methodology.md#8
+
+  - id: INV-002
+    title: Enumerate auth modes and ALL JWT/token types minted
+    domain: authn-session-jwt
+    phase: frame
+    severity: info
+    method: inventory
+    oracle: [RFC 8725]
+    applicability:
+      question: Does the app authenticate users or mint tokens?
+      auto_probe:
+        type: grep_present
+        patterns: ['jwt\.(encode|sign|decode|verify)', 'jsonwebtoken', 'python-jose', 'create_access_token', 'Bearer', 'set_cookie', 'session\[']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        List every token-minting site and the PURPOSE of each token (access,
+        2fa_challenge, pw_reset, email_verify, magic_link, ...). This list is the
+        input to JWT-002 (token-purpose confusion). Grep every mint site, then
+        grep every decode/validator site.
+    pass_criteria: Every minted token type is listed with its intended purpose and consumers.
+    ref: references/hardening-playbook.md#5b
+
+  - id: INV-003
+    title: Enumerate outbound/server-side fetches (SSRF surface)
+    domain: ssrf-webhook-idem
+    phase: frame
+    severity: info
+    method: inventory
+    oracle: [CWE-918, OWASP A10:2021]
+    applicability:
+      question: Does the server fetch any URL influenced by user input?
+      auto_probe:
+        type: grep_present
+        patterns: ['requests\.(get|post)', 'httpx\.', 'urllib', 'fetch\(', 'axios', 'http\.request', 'import_from_url', 'webhook', 'unfurl', 'link.?preview', 'avatar.?url']
+        langs: [py, ts, js]
+    proof:
+      description: List every place the server fetches a user-influenced URL (webhook reg, import-from-URL, avatar-by-URL, link unfurl, LLM/RAG URL reads).
+    pass_criteria: Outbound-fetch inventory exists; each entry maps to SSRF-001 applicability.
+    ref: references/more-controls.md#1
+
+  - id: INV-004
+    title: Enumerate secrets, env vars, and every sink they can reach
+    domain: secrets-logging
+    phase: frame
+    severity: info
+    method: inventory
+    oracle: [CWE-532]
+    applicability:
+      question: Does the project use secrets/API keys/tokens?
+      auto_probe:
+        type: grep_present
+        patterns: ['os\.environ', 'process\.env', 'getenv', 'dotenv', 'SECRET', 'API_KEY', 'TOKEN', 'PASSWORD']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        List every secret/env name (NEVER values) and every sink that could echo it
+        (logs, error bodies, alerts, emails, LLM output, validation errors). Feeds
+        SEC-LEAK-001 and PATTERN-003.
+    pass_criteria: Secret/env name inventory + sink map exists. No values printed.
+    ref: references/secrets-and-ops.md#2
+
+  - id: INV-005
+    title: Enumerate data stores and the tenancy/ownership model
+    domain: access-control
+    phase: frame
+    severity: info
+    method: inventory
+    oracle: [OWASP API1:2023]
+    applicability:
+      question: Does the app store per-user or per-tenant data?
+      auto_probe:
+        type: grep_present
+        patterns: ['owner_id', 'user_id', 'tenant_id', 'org_id', 'FOREIGN KEY', 'ForeignKey', 'relationship\(', 'createClient', 'supabase', 'prisma', 'sqlalchemy']
+        langs: [py, ts, js, sql]
+    proof:
+      description: Document the ownership column(s), the tenancy boundary, and any FK cascades that cross it. Feeds BOLA-001 and TENANT-DEL-001.
+    pass_criteria: Tenancy model + cascade map documented.
+    ref: references/hardening-playbook.md#8
+
+  - id: INV-006
+    title: Enumerate LLM/AI surfaces (user-influenced text to a model)
+    domain: llm-ai
+    phase: frame
+    severity: info
+    method: inventory
+    oracle: [OWASP LLM Top 10 2025]
+    applicability:
+      question: Does any user-influenced text reach an LLM (chat, parse, RAG, agent sim)?
+      auto_probe:
+        type: grep_present
+        patterns: ['anthropic', 'openai', 'messages\.create', 'chat\.completions', 'gemini', 'generativeai', 'ollama', 'system.?prompt', 'completion']
+        langs: [py, ts, js]
+    proof:
+      description: List user-facing LLM surfaces (guard the perimeter) vs internal high-volume calls (do not guard the hot loop). Feeds LLM-INJ-001 / LLM-OUT-001.
+    pass_criteria: LLM surface inventory distinguishes user-facing from internal calls.
+    ref: references/ai-llm-security.md#4
+
+  - id: INV-007
+    title: Identify the real deploy target and deploy mechanism
+    domain: deploy-ops
+    phase: frame
+    severity: high
+    method: inventory
+    oracle: [internal ops]
+    applicability:
+      question: Will any of this reach a deployed environment?
+      auto_probe:
+        type: grep_present
+        patterns: ['vercel', 'railway', 'Dockerfile', 'fly\.toml', '\.github/workflows', 'netlify', 'render\.yaml', 'supabase/config']
+        langs: [py, ts, js, yaml, toml]
+    proof:
+      description: >
+        Confirm account + project + branch + the ACTUAL deploy mechanism (git
+        auto-deploy vs CLI image push). A push to a branch may change nothing, or
+        may be a prod change — know which.
+    pass_criteria: Deploy target + mechanism confirmed and written down before any deploy.
+    ref: references/secrets-and-ops.md#3
+
+  - id: INV-008
+    title: Detect the stack(s) to select proof templates
+    domain: deploy-ops
+    phase: frame
+    severity: info
+    method: inventory
+    oracle: [internal]
+    applicability:
+      question: Always applicable.
+      auto_probe:
+        type: file_present
+        patterns: ['requirements.txt', 'pyproject.toml', 'package.json', 'supabase/**', '**/migrations/**']
+    proof:
+      description: Detect python-fastapi / typescript-node / supabase-postgres to pick the right adversarial-test templates.
+    pass_criteria: Stack(s) detected; template set selected.
+    ref: templates/INDEX.md
+
+  # =========================================================================
+  # STAGE 2 — STATIC / AUTOMATED PROOFS  (method: static-scan)
+  #   The runner executes these itself and captures evidence. No agent judgement
+  #   required to GATHER them — only to triage a failure.
+  # =========================================================================
+
+  - id: SEC-LEAK-001
+    title: No secret present in source or git history
+    domain: secrets-logging
+    phase: static
+    severity: critical
+    method: static-scan
+    oracle: [CWE-532]
+    applicability:
+      question: Does the repo have a git history / source files? (Always, if code.)
+      auto_probe:
+        type: command
+        command: 'gitleaks detect --no-banner --redact -v'
+        fallback_command: 'trufflehog filesystem . --no-update'
+        absent_status: NEEDS-PROOF   # if neither tool present, agent must run an equivalent
+    pass_criteria: Zero verified secrets in working tree or history. Redacted evidence attached.
+    fail_action: Class-1. Rotate the secret (assume compromised) BEFORE remediating code.
+    ref: references/secrets-and-ops.md#2
+
+  - id: DEP-001
+    title: No high/critical dependency advisories (runtime-weighted)
+    domain: deps-supplychain
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP A06:2021]
+    applicability:
+      question: Does the project have third-party dependencies?
+      auto_probe:
+        type: command
+        command: 'pip-audit -f json || npm audit --json || osv-scanner -r .'
+        absent_status: NEEDS-PROOF
+    pass_criteria: >
+      No unresolved high/critical advisories on RUNTIME deps. Dev-only advisories
+      noted and risk-accepted explicitly (not silently).
+    fail_action: Class-1/2 by runtime-vs-dev weighting. Patch or document acceptance.
+    ref: references/more-controls.md#6
+
+  - id: DEP-002
+    title: Lockfiles committed and version-pinned
+    domain: deps-supplychain
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [OWASP A06:2021]
+    applicability:
+      question: Node/Python project with a package manifest?
+      auto_probe:
+        type: file_present
+        patterns: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'poetry.lock', 'requirements.txt', 'uv.lock']
+    pass_criteria: A committed lockfile exists; installs are reproducible.
+    ref: references/more-controls.md#6
+
+  - id: DEP-003
+    title: CI/CD actions pinned to a commit SHA (not a moving tag)
+    domain: deps-supplychain
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [OWASP A08:2021]
+    applicability:
+      question: Does the repo use GitHub Actions / CI workflows?
+      auto_probe:
+        type: grep_present
+        patterns: ['uses:\s+\S+@v\d', 'uses:\s+\S+@(main|master)']
+        langs: [yaml]
+    proof:
+      description: An action pinned to @v3 or @main is mutable supply chain. Pin to a 40-char SHA.
+    pass_criteria: Every `uses:` is pinned to a full commit SHA.
+    fail_action: Class-2. Repin to SHAs.
+    ref: references/more-controls.md#6
+
+  - id: ENV-001
+    title: .gitignore covers .env* and key files BEFORE first commit
+    domain: secrets-logging
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [CWE-532]
+    applicability:
+      question: Always applicable to any repo.
+      auto_probe:
+        type: file_present
+        patterns: ['.gitignore']
+        also_grep: ['\.env', '\*\.pem', '\*\.key']
+    pass_criteria: .gitignore exists and matches .env*, *.pem, *.key, local config.
+    fail_action: Add patterns. If .env already committed, treat its secrets as compromised → rotate.
+    ref: references/secrets-and-ops.md#2
+
+  - id: ENV-002
+    title: .env.example has keys only, no values
+    domain: secrets-logging
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [CWE-532]
+    applicability:
+      question: Does the project use env-based config?
+      auto_probe:
+        type: file_present
+        patterns: ['.env.example', '.env.sample', '.env.template']
+    pass_criteria: Example env file present, lists key NAMES with empty values only.
+    ref: references/secrets-and-ops.md#2
+
+  - id: HDR-001
+    title: Security headers present on responses
+    domain: headers-cors-csrf
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [OWASP A05:2021]
+    applicability:
+      question: Does the app serve HTTP responses to browsers?
+      auto_probe:
+        type: grep_present
+        patterns: ['Content-Security-Policy', 'X-Content-Type-Options', 'X-Frame-Options', 'Strict-Transport-Security', 'helmet', 'add_security_headers']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Verify CSP (locked script-src), X-Content-Type-Options nosniff,
+        X-Frame-Options DENY (or CSP frame-ancestors none), HSTS, Referrer-Policy,
+        COOP, Permissions-Policy. Prefer a live probe (curl -I) when a URL is available.
+    pass_criteria: All listed headers present; CSP avoids unsafe-inline where feasible.
+    ref: references/hardening-playbook.md#7
+
+  - id: HDR-002
+    title: CORS does not reflect arbitrary Origin with credentials
+    domain: headers-cors-csrf
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP A05:2021]
+    applicability:
+      question: Does the app set CORS headers?
+      auto_probe:
+        type: antipattern
+        patterns: ['allow_origins=\["\*"\].*allow_credentials=True', 'Access-Control-Allow-Origin.*\*.*Allow-Credentials.*true', 'origin:\s*true.*credentials:\s*true']
+        langs: [py, ts, js]
+    proof:
+      description: A wildcard origin with credentials is the classic foot-gun. Pin an explicit allow-list.
+    pass_criteria: CORS uses an explicit origin allow-list; never `*` + credentials.
+    fail_action: Class-1 if credentials are reflected to arbitrary origins.
+    ref: references/hardening-playbook.md#7
+
+  - id: PATTERN-001
+    title: No naive rate limiter keyed on spoofable client IP / XFF
+    domain: rate-abuse
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP API4:2023]
+    applicability:
+      question: Does the code implement rate limiting?
+      auto_probe:
+        type: antipattern
+        patterns: ['request\.client\.host', 'check_rate_limit\([^)]*request\.client', 'X-Forwarded-For', 'req\.headers\["x-forwarded-for"\]', 'defaultdict\(list\).*rate']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Flags the exact bug the floor `security-hardening` skill ships: an in-memory
+        limiter keyed on `request.client.host` (per-worker + XFF-spoofable). Key on
+        the AUTHENTICATED identity; use a shared store in prod; parse XFF via trusted
+        -proxy count, not blindly.
+    pass_criteria: Limiter keys on authed identity, uses shared store, XFF handled by trusted-proxy config.
+    fail_action: Class-1/2. Replace with the hardening-playbook.md#3 pattern.
+    ref: references/hardening-playbook.md#3
+
+  - id: PATTERN-002
+    title: No 403-vs-404 existence leak on others' objects
+    domain: access-control
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [OWASP API1:2023, CWE-639]
+    applicability:
+      question: Does the code do ownership checks after fetching by id?
+      auto_probe:
+        type: antipattern
+        patterns: ['owner_id\s*!=.*raise.*403', 'Forbidden\(\)', 'if .*\.user_id != .*:\s*\n.*403', 'HTTPException\(403']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Flags fetch-then-check that returns 403 for owned-by-other (leaks existence)
+        vs 404 for missing. Use one scoped query by (owner_id, id) and return an
+        identical 404 for both. (This is the pattern the floor `owasp-top-10` skill
+        currently teaches incorrectly.)
+    pass_criteria: Cross-identity access returns 404 indistinguishable from never-existed.
+    fail_action: Class-2. Rewrite to scoped query; verify with BOLA-001.
+    ref: references/hardening-playbook.md#1
+
+  - id: PATTERN-003
+    title: No hardcoded fallback secret / default JWT secret
+    domain: secrets-logging
+    phase: static
+    severity: critical
+    method: static-scan
+    oracle: [CWE-798]
+    applicability:
+      question: Does the code read a secret with a default fallback?
+      auto_probe:
+        type: antipattern
+        patterns: ['getenv\([^)]+,\s*["\x27][^"\x27]+["\x27]\)', 'process\.env\.\w+\s*\|\|\s*["\x27]', 'SECRET.*=.*["\x27][A-Za-z0-9]{8,}["\x27]', 'JWT_SECRET.*or.*["\x27]']
+        langs: [py, ts, js]
+    proof:
+      description: A hardcoded default JWT secret shipped to prod = total auth bypass. Fail closed if the env var is missing.
+    pass_criteria: No secret has a hardcoded fallback; missing required secret aborts startup.
+    fail_action: Class-1. Remove fallback; rotate the exposed default.
+    ref: references/secrets-and-ops.md#2
+
+  - id: PATTERN-004
+    title: No alg-family-only or unpinned JWT verification
+    domain: authn-session-jwt
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [RFC 8725]
+    applicability:
+      question: Does the code decode/verify JWTs?
+      auto_probe:
+        type: antipattern
+        patterns: ['verify=False', 'algorithms=None', 'jwt\.decode\([^)]*\)(?![^)]*algorithms)', 'decode\([^)]*verify_signature.*False']
+        langs: [py, ts, js]
+    proof:
+      description: Pin the EXACT expected alg at decode; reject alg=none and RS↔HS confusion. Require `exp`.
+    pass_criteria: Decode pins one alg, requires exp, verifies signature. Proven by JWT-001.
+    fail_action: Class-1. Pin alg; add require-exp; verify with JWT-001.
+    ref: references/hardening-playbook.md#5
+
+  - id: REDOS-001
+    title: All guard/validation regexes are bounded (no ReDoS)
+    domain: injection-input
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [CWE-1333]
+    applicability:
+      question: Does the code use regex on user input (guards, validators)?
+      auto_probe:
+        type: antipattern
+        patterns: ['\(\.\*\)\+', '\(\[\^.*\]\+\)\+', '\(\.\+\)\+', '\(\\\\w\+\)\+', '\(\.\*\)\*']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Nested unbounded quantifiers can catastrophically backtrack. Run every guard
+        regex against a multi-KB adversarial input and assert it completes <1ms. A
+        regex guard that hangs IS a DoS.
+    pass_criteria: Every regex bounded; timing test <1ms on adversarial input.
+    fail_action: Class-1/2. Rewrite to bounded quantifiers.
+    ref: references/ai-llm-security.md#6
+
+  # =========================================================================
+  # STAGE 3 — ADVERSARIAL PROOFS  (method: adversarial-test)
+  #   Each must be PROVEN by a falsifiable test authored from a per-stack template.
+  #   The runner cannot decide these alone -> they start as NEEDS-PROOF and the
+  #   protocol forbids "secure" until each applicable one is green in a clean batch.
+  # =========================================================================
+
+  - id: BOLA-001
+    title: Object authz — cross-identity access returns indistinguishable 404
+    domain: access-control
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP API1:2023, CWE-639]
+    applicability:
+      question: Are any owned objects addressable by id on read OR write paths?
+      auto_probe:
+        type: manual   # depends on INV-001/INV-005 surface
+    proof:
+      description: >
+        Identity B requests A's object by id across EVERY read AND write path
+        (GET, export, mutating POSTs like comment/annotate). All must 404, byte-
+        indistinguishable from a never-existed id (same status, body, length).
+        The mutating endpoints are the classic miss.
+      templates:
+        python-fastapi: templates/python-fastapi/test_bola.py
+        typescript-node: templates/typescript-node/bola.test.ts
+        supabase-postgres: templates/supabase-postgres/bola_rls.sql
+    pass_criteria: All cross-identity object accesses 404; no 403/404 differential; no 200.
+    fail_action: Class-1. Scope queries by (owner_id, id).
+    ref: references/hardening-playbook.md#1
+
+  - id: BFLA-001
+    title: Function authz — lower-role token cannot reach admin/owner routes
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API5:2023]
+    applicability:
+      question: Are there role-gated (admin/owner-only) routes?
+      auto_probe:
+        type: manual
+    proof:
+      description: A valid lower-role token hits every admin/owner-only route -> 403.
+      templates:
+        python-fastapi: templates/python-fastapi/test_bfla.py
+        typescript-node: templates/typescript-node/bfla.test.ts
+    pass_criteria: Every privileged route rejects a valid lower-role token with 403.
+    fail_action: Class-1. Add function-level authz.
+    ref: references/security-testing-methodology.md#5
+
+  - id: MASS-001
+    title: Mass assignment — privileged fields are ignored, not bound
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API6:2023]
+    applicability:
+      question: Do any write endpoints bind a request body to a model?
+      auto_probe:
+        type: grep_present
+        patterns: ['\.dict\(\)', 'model_dump', '\*\*(payload|body|data)', 'Object\.assign', 'spread', 'setattr']
+        langs: [py, ts, js]
+    proof:
+      description: POST privileged fields (role, plan, is_admin, tenant_id) -> server ignores them; re-fetch proves unchanged.
+      templates:
+        python-fastapi: templates/python-fastapi/test_mass_assignment.py
+        typescript-node: templates/typescript-node/mass_assignment.test.ts
+    pass_criteria: Privileged fields never bound from client; re-fetch shows no change.
+    fail_action: Class-1. Use explicit allow-listed input schemas (extra=forbid).
+    ref: references/security-testing-methodology.md#5
+
+  - id: RATE-001
+    title: Rate limit holds on authed identity under XFF rotation
+    domain: rate-abuse
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API4:2023, RFC 6585]
+    applicability:
+      question: Is rate limiting required on any route (auth, LLM, write)?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        Send N+1 while rotating X-Forwarded-For / X-Real-IP -> still 429 on the
+        authenticated identity, with Retry-After. Verify the limit holds cluster-
+        wide (shared store), not per-worker.
+      templates:
+        python-fastapi: templates/python-fastapi/test_rate_limit_xff.py
+        typescript-node: templates/typescript-node/rate_limit_xff.test.ts
+    pass_criteria: Limit holds on authed identity despite XFF rotation; 429 carries Retry-After.
+    fail_action: Class-1. Re-key on identity; shared store; trusted-proxy XFF parsing.
+    ref: references/hardening-playbook.md#3
+
+  - id: LOCK-001
+    title: Per-account lockout at threshold, before the password hash
+    domain: rate-abuse
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API4:2023, OWASP ASVS V2.2.1]
+    applicability:
+      question: Is there a password login endpoint?
+      auto_probe:
+        type: grep_present
+        patterns: ['/login', 'def login', 'authenticate', 'verify_password', 'bcrypt', 'argon2', 'check_password']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        N failed logins on one email FROM MANY IPs -> throttled by email, not just
+        IP. Test with VALID-SHAPED wrong passwords (so input validation does not
+        mask the test). Lockout check must run BEFORE the bcrypt/argon2 hash.
+      templates:
+        python-fastapi: templates/python-fastapi/test_lockout.py
+        typescript-node: templates/typescript-node/lockout.test.ts
+    pass_criteria: Account throttled by identity at the documented threshold; hash not reached when locked.
+    fail_action: Class-1/2. Gate on counter before hash; key on email; sliding window; fail-open store.
+    ref: references/hardening-playbook.md#4
+
+  - id: RACE-001
+    title: Quota/balance debit is atomic under concurrency
+    domain: rate-abuse
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [TOCTOU; logic]
+    applicability:
+      question: Does the app debit a balance/quota/credit before doing work?
+      auto_probe:
+        type: grep_present
+        patterns: ['balance', 'credits', 'quota', 'tokens_remaining', 'decrement', 'usage_count']
+        langs: [py, ts, js, sql]
+    proof:
+      description: >
+        Fire the (N+1)th quota-consuming request CONCURRENTLY against a balance of
+        N -> exactly N succeed, never N+1. Final balance is exactly 0, never
+        negative. Check + debit must be a single guarded UPDATE (guard in WHERE),
+        not check-then-act.
+      templates:
+        python-fastapi: templates/python-fastapi/test_quota_race.py
+        typescript-node: templates/typescript-node/quota_race.test.ts
+        supabase-postgres: templates/supabase-postgres/atomic_debit.sql
+    pass_criteria: Concurrency test shows exactly-N successes; balance never negative.
+    fail_action: Class-1. Single atomic conditional UPDATE; react to row count; 402 on loss.
+    ref: references/hardening-playbook.md#2
+
+  - id: JWT-001
+    title: JWT decode rejects none/confusion/missing-exp/expired/tampered/aud
+    domain: authn-session-jwt
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [RFC 8725]
+    applicability:
+      question: Does the app accept JWTs as auth?
+      auto_probe:
+        type: grep_present
+        patterns: ['jwt\.decode', 'jwt\.verify', 'jsonwebtoken', 'python-jose', 'jose\.']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Hand-craft and send: alg=none, alg-confusion (RS->HS with public key as
+        HMAC secret), missing-exp, expired, tampered-signature, aud-mismatch ->
+        ALL rejected 401. Do NOT assume the library default rejects missing-exp;
+        prove it with a token that has no exp.
+      templates:
+        python-fastapi: templates/python-fastapi/test_jwt_hardening.py
+        typescript-node: templates/typescript-node/jwt_hardening.test.ts
+    pass_criteria: All six malformed/abusive token classes return 401.
+    fail_action: Class-1. Pin alg; require exp; validate aud/iss for third-party tokens.
+    ref: references/hardening-playbook.md#5
+
+  - id: JWT-002
+    title: Token-purpose confusion — non-access tokens rejected on protected routes
+    domain: authn-session-jwt
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP API2:2023, RFC 8725 §3.11]
+    applicability:
+      question: Does the app mint MORE than one JWT type (2fa-challenge, pw-reset, email-verify, magic-link)?
+      auto_probe:
+        type: manual   # depends on INV-002 token-type list
+    proof:
+      description: >
+        THE 2FA-bypass class. Mint each non-access token type and send it as a
+        Bearer to a protected route -> every one must 401. Specifically: complete
+        /login, take the 2fa `challenge_id`, use it as a Bearer -> 401, NOT 200.
+        The access validator must reject any token whose purpose != access.
+      templates:
+        python-fastapi: templates/python-fastapi/test_token_purpose.py
+        typescript-node: templates/typescript-node/token_purpose.test.ts
+    pass_criteria: Every non-access token type is rejected (401) on protected routes; the 2FA challenge token cannot authenticate.
+    fail_action: Class-1 (HIGH/critical). Stamp + require a `purpose` claim per consumer; ideally separate signing keys.
+    ref: references/hardening-playbook.md#5b
+
+  - id: INJ-001
+    title: Injection — SQL/XSS/cmd in every string field is neutralized
+    domain: injection-input
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP A03:2021, CWE-89, CWE-79, CWE-78]
+    applicability:
+      question: Does any endpoint accept string input that reaches a DB, shell, or rendered output?
+      auto_probe:
+        type: grep_present
+        patterns: ['execute\(', 'cursor\.', 'f"SELECT', 'f\x27SELECT', 'os\.system', 'subprocess', 'eval\(', 'dangerouslySetInnerHTML', 'innerHTML']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Inject in every string field -> parameterized/escaped, never a 500 with a
+        DB error, never reflected as executable. JSON APIs served as application/json
+        keep stored payloads inert.
+      templates:
+        python-fastapi: templates/python-fastapi/test_injection.py
+        typescript-node: templates/typescript-node/injection.test.ts
+        supabase-postgres: templates/supabase-postgres/injection_probe.sql
+    pass_criteria: All injection payloads handled safely; no DB error leak; no executable reflection.
+    fail_action: Class-1. Parameterize; escape on output; set correct content-type.
+    ref: references/security-testing-methodology.md#5
+
+  - id: TENANT-DEL-001
+    title: Cross-tenant deletion safety — deleting A leaves B untouched
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API1:2023, GDPR Art.17]
+    applicability:
+      question: Does the app support account/tenant deletion with FK relationships?
+      auto_probe:
+        type: grep_present
+        patterns: ['cascade', 'ondelete', 'on_delete', 'DELETE FROM', '\.delete\(']
+        langs: [py, ts, js, sql]
+    proof:
+      description: Seed A and B; delete A; assert B's row counts are byte-identical before/after and B's objects still readable.
+      templates:
+        python-fastapi: templates/python-fastapi/test_tenant_deletion.py
+        supabase-postgres: templates/supabase-postgres/cascade_safety.sql
+    pass_criteria: Tenant A deletion changes zero rows belonging to tenant B.
+    fail_action: Class-1. Scope cascades to the tenant boundary.
+    ref: references/hardening-playbook.md#8
+
+  - id: SSRF-001
+    title: SSRF — server fetch validates resolved IP and re-validates redirects
+    domain: ssrf-webhook-idem
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [CWE-918, OWASP A10:2021]
+    applicability:
+      question: (from INV-003) Does the server fetch any user-influenced URL?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        Attempt fetches to 169.254.169.254 (metadata), 127.0.0.1, a private IP, and
+        a PUBLIC url that 302-redirects to a private one -> all rejected. Validate
+        AFTER DNS resolution against the resolved IP; re-validate every redirect hop;
+        pin the resolved IP on connect (defeats DNS rebinding).
+      templates:
+        python-fastapi: templates/python-fastapi/test_ssrf.py
+        typescript-node: templates/typescript-node/ssrf.test.ts
+    pass_criteria: All internal/metadata/redirect-to-private fetches rejected; only allow-listed schemes/hosts pass.
+    fail_action: Class-1. Validate resolved IP; block private/metadata ranges; re-check on redirect.
+    ref: references/more-controls.md#1
+
+  - id: WEBHOOK-001
+    title: Inbound webhook verified — HMAC over raw body, replay window, idempotent
+    domain: ssrf-webhook-idem
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP A08:2021]
+    applicability:
+      question: Does the app receive inbound provider webhooks (Stripe/GitHub/etc.)?
+      auto_probe:
+        type: grep_present
+        patterns: ['whsec', 'stripe.*webhook', 'X-Hub-Signature', 'webhook.*signature', 'verify.*signature']
+        langs: [py, ts, js]
+    proof:
+      description: Bad/missing signature -> 400; replayed old-timestamp -> rejected; duplicate event id -> processed once. HMAC over the RAW body (not re-serialized JSON).
+      templates:
+        python-fastapi: templates/python-fastapi/test_webhook.py
+        typescript-node: templates/typescript-node/webhook.test.ts
+    pass_criteria: Unsigned/replayed/duplicate webhooks are rejected or deduped; signature verified over raw bytes with constant-time compare.
+    fail_action: Class-1. Verify HMAC over raw body; enforce timestamp tolerance; idempotent by event id.
+    ref: references/more-controls.md#2
+
+  - id: IDEM-001
+    title: Idempotency — retried non-idempotent op applies its effect exactly once
+    domain: ssrf-webhook-idem
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [logic; companion to RACE-001]
+    applicability:
+      question: Are there non-idempotent operations a client may retry (payment, order, send-email)?
+      auto_probe:
+        type: grep_present
+        patterns: ['Idempotency-Key', 'idempotency', 'charge', 'create_order', 'send_email', 'provision']
+        langs: [py, ts, js]
+    proof:
+      description: Fire the same idempotency key twice (sequentially AND concurrently) -> the side effect happens exactly once; both responses match.
+      templates:
+        python-fastapi: templates/python-fastapi/test_idempotency.py
+        typescript-node: templates/typescript-node/idempotency.test.ts
+    pass_criteria: Duplicate key -> stored result returned; side effect occurs once under concurrent retry.
+    fail_action: Class-1/2. Persist (key->result) with a unique constraint inside the txn.
+    ref: references/more-controls.md#4
+
+  - id: TIMING-001
+    title: Submitted-secret comparisons are constant-time
+    domain: ssrf-webhook-idem
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [CWE-208]
+    applicability:
+      question: Does the app compare any attacker-submittable secret (api key, reset token, HMAC, TOTP)?
+      auto_probe:
+        type: antipattern
+        patterns: ['token\s*==', 'api_key\s*==', 'secret\s*==', 'hmac\s*==', 'signature\s*==']
+        langs: [py, ts, js]
+    proof:
+      description: Verify the comparison path uses a constant-time primitive (hmac.compare_digest / crypto.timingSafeEqual / subtle.ConstantTimeCompare). Assert the CALL, not the timing (timing tests are flaky in CI).
+      templates:
+        python-fastapi: templates/python-fastapi/test_timing_safe.py
+        typescript-node: templates/typescript-node/timing_safe.test.ts
+    pass_criteria: Every submitted-secret compare uses a constant-time primitive.
+    fail_action: Class-2. Replace == with a constant-time compare of equal-length hashes.
+    ref: references/more-controls.md#3
+
+  - id: SIZE-001
+    title: Body size, JSON depth, and decompressed size are bounded
+    domain: injection-input
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [CWE-400]
+    applicability:
+      question: Does any endpoint accept a body, upload, or compressed input?
+      auto_probe:
+        type: grep_present
+        patterns: ['max_length', 'MAX_CONTENT', 'body.?limit', 'client_max_body', 'multipart', 'gzip', 'decompress']
+        langs: [py, ts, js]
+    proof:
+      description: Oversized body -> 413; over-deep nested JSON -> 400 (not a 500/crash); zip-bomb gzip -> capped on DECOMPRESSED size.
+      templates:
+        python-fastapi: templates/python-fastapi/test_size_limits.py
+        typescript-node: templates/typescript-node/size_limits.test.ts
+    pass_criteria: Oversized/over-deep/over-expanding inputs are rejected cleanly (413/400), never crash.
+    fail_action: Class-2. Cap body size at edge+app; bound JSON depth; cap decompressed size.
+    ref: references/more-controls.md#5
+
+  - id: LLM-INJ-001
+    title: Prompt injection blocked pre-dispatch on user-facing LLM surfaces
+    domain: llm-ai
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP LLM01:2025]
+    applicability:
+      question: (from INV-006) Does user-influenced text reach an LLM on a user-facing surface?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        A battery of injection strings -> all rejected (400) BEFORE dispatch. A
+        battery of legitimate domain inputs -> all pass (false-positive guard). The
+        scanner pairs a manipulation VERB with an instruction/system OBJECT so real
+        business text ("ignore our previous pricing") does not trip it.
+      templates:
+        python-fastapi: templates/python-fastapi/test_prompt_injection.py
+        typescript-node: templates/typescript-node/prompt_injection.test.ts
+    pass_criteria: Injections blocked pre-dispatch; legitimate inputs pass; zero false positives on the domain battery.
+    fail_action: Class-1/2. Add Tier-1 scan_input at the user-facing surface.
+    ref: references/ai-llm-security.md#3
+
+  - id: LLM-OUT-001
+    title: LLM output scrub masks secrets and PII
+    domain: llm-ai
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP LLM02:2025, LLM06:2025, CWE-532]
+    applicability:
+      question: Does LLM output return to a user or get logged?
+      auto_probe:
+        type: manual
+    proof:
+      description: Plant secrets/PII in model output -> all masked. Clean output -> returned untouched. Reuse the SAME secret-scrubber as logs (single source of truth).
+      templates:
+        python-fastapi: templates/python-fastapi/test_output_scrub.py
+        typescript-node: templates/typescript-node/output_scrub.test.ts
+    pass_criteria: Secrets/PII masked in output; clean text unchanged.
+    fail_action: Class-1/2. Apply scrub_output before returning model text.
+    ref: references/ai-llm-security.md#3
+
+  - id: LLM-FAILOPEN-001
+    title: LLM guard fails open and has a kill switch
+    domain: llm-ai
+    phase: decision
+    severity: medium
+    method: decision
+    oracle: [OWASP LLM01:2025]
+    applicability:
+      question: Is there an LLM input/output guard?
+      auto_probe:
+        type: grep_present
+        patterns: ['GUARD_ENABLED', 'scan_input', 'scrub_output', 'guard']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Force the scanner to raise -> request still allowed (fail-open proven).
+        Kill-switch off (GUARD_ENABLED=false) -> obvious attack passes (switch
+        proven). A guard bug must never take down a paying user's request.
+    pass_criteria: Guard fails open under exception; env kill-switch disables it without redeploy.
+    fail_action: Class-2. Wrap guard in try/except->allow; add GUARD_ENABLED flag.
+    ref: references/ai-llm-security.md#4
+
+  - id: AUDIT-001
+    title: Audit log is append-only / separately-sinked and survives user deletion
+    domain: secrets-logging
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [GDPR Art.17(3)(b)]
+    applicability:
+      question: Does the app keep an audit/security-event log?
+      auto_probe:
+        type: grep_present
+        patterns: ['audit', 'audit_log', 'security_event', 'log.*login', 'event_log']
+        langs: [py, ts, js, sql]
+    proof:
+      description: The app DB role cannot UPDATE/DELETE audit rows; a deleted user's audit events still exist (PII-scrubbed).
+      templates:
+        supabase-postgres: templates/supabase-postgres/audit_append_only.sql
+    pass_criteria: Audit rows immutable to the app role; survive user deletion; PII scrubbed from payload.
+    fail_action: Class-2. Revoke UPDATE/DELETE; ship to a separate sink; retain on deletion.
+    ref: references/more-controls.md#7
+
+  # =========================================================================
+  # STAGE 4 — FORCED DECISIONS  (method: decision)
+  #   Not a test — a documented decision artifact. The engine refuses to pass a
+  #   control that establishes/reduces trust without a recorded fail-mode + switch.
+  # =========================================================================
+
+  - id: DEC-001
+    title: Every control has a documented fail-open/closed decision
+    domain: deploy-ops
+    phase: decision
+    severity: high
+    method: decision
+    oracle: [internal framework]
+    applicability:
+      question: Are there any security controls in the app? (Always, if any control exists.)
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        For each control, record: on failure of the control itself, does the request
+        proceed or deny? Boundary controls that establish trust (authn, authz, write
+        input-validation) FAIL CLOSED; layered defenses that reduce risk (rate limit,
+        lockout, LLM guard, audit log) FAIL OPEN + alert. Write the decision in a
+        comment next to the control.
+    pass_criteria: A fail-mode table exists; every control's choice is deliberate and commented.
+    fail_action: Decide and document each. An accidental fail-mode is a latent incident.
+    ref: references/secrets-and-ops.md#1
+
+  - id: DEC-002
+    title: Every blocking control has an env kill-switch
+    domain: deploy-ops
+    phase: decision
+    severity: medium
+    method: decision
+    oracle: [internal framework]
+    applicability:
+      question: Are there controls that can block a legitimate user (lockout, guard, WAF rule)?
+      auto_probe:
+        type: manual
+    proof:
+      description: Any control that can block a real user needs an env-flag kill switch to disable it in seconds during an incident WITHOUT a code change or redeploy.
+    pass_criteria: Each blocking control has a documented env kill-switch, tested to work.
+    fail_action: Add the flag. If you can't turn it off fast, you can't turn it on safely.
+    ref: references/ai-llm-security.md#4
+
+  - id: CSRF-001
+    title: CSRF posture matches the auth transport
+    domain: headers-cors-csrf
+    phase: decision
+    severity: medium
+    method: decision
+    oracle: [OWASP A01:2021]
+    applicability:
+      question: How does the app transport auth — bearer header or session cookie?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        Bearer-in-Authorization (typical SPA): not CSRF-vulnerable -> fight XSS
+        instead (CSP, output encoding; don't store tokens where XSS reads them).
+        Session cookie: IS CSRF-vulnerable -> SameSite=Lax/Strict + Secure + HttpOnly
+        AND CSRF tokens for state-changing requests. Decide deliberately; don't mix
+        auto-attached cookies with no CSRF protection.
+    pass_criteria: The CSRF defense matches the chosen transport; bearer routes reject ambient cookies.
+    fail_action: Align defense to transport.
+    ref: references/more-controls.md#8
+
+  # =========================================================================
+  # STAGE 5 — TRIAGE & VERDICT DISCIPLINE  (method: decision / static-scan)
+  # =========================================================================
+
+  - id: TEST-ISO-001
+    title: Security tests pass in a clean batch run (order-independent)
+    domain: deploy-ops
+    phase: decision
+    severity: high
+    method: static-scan
+    oracle: ['Anti-pattern #13']
+    applicability:
+      question: Are there automated security tests?
+      auto_probe:
+        type: command
+        command: 'pytest -p no:randomly tests/security && pytest -p randomly tests/security'
+        fallback_command: 'npm test'
+        absent_status: NEEDS-PROOF
+    proof:
+      description: >
+        Run the suite fixed-order, then randomized. If order changes results you
+        have a state-leak (shared in-memory DB, module-global capture, last-importer
+        -wins override, process-global counters, RNG seed leak). A green CI on an
+        order-dependent suite tells you NOTHING.
+    pass_criteria: Suite passes both fixed and randomized order; no test passes only-in-isolation.
+    fail_action: "Fix the test isolation (Anti-pattern #13), NOT the product, to make it pass."
+    ref: references/security-testing-methodology.md#4
+
+  - id: TRIAGE-001
+    title: Every red test is triaged to Class 1-5 with a logged reason
+    domain: deploy-ops
+    phase: triage
+    severity: high
+    method: decision
+    oracle: [triage taxonomy]
+    applicability:
+      question: Did any security test fail during the sweep?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        Classify each failure: Class-1 real vuln (fix code) / Class-2 lower-severity
+        gap (fix or accept+document) / Class-3 env-only (document, don't weaken code)
+        / Class-4 invalid spec (fix test) / Class-5 platform limit (verify in staging).
+        "12 failing tests" is meaningless; "1 Class-1, 3 Class-3, 8 Class-4" is a plan.
+    pass_criteria: Every red has a class + resolution in tests/security/TRIAGE.md.
+    fail_action: Triage before fixing; fixing the wrong class wastes hours and can mask defects.
+    ref: references/security-testing-methodology.md#3
+
+  - id: DOC-FRESH-001
+    title: No stale "TODO/unimplemented" docs for controls that shipped
+    domain: deploy-ops
+    phase: decision
+    severity: medium
+    method: static-scan
+    oracle: [audit-hazard]
+    applicability:
+      question: Are there triage logs / design notes / test docstrings describing controls?
+      auto_probe:
+        type: grep_present
+        patterns: ['TODO', 'FIXME', 'not implemented', 'expected.?fail', 'xfail', 'Class-1', 'unimplemented']
+        langs: [py, ts, js, md]
+    proof:
+      description: A stale "this control doesn't exist yet" note makes a future auditor report a FIXED control as a live vuln, or "fix" a real red flag to green. When a control ships, update/delete the doc that called it broken in the SAME change.
+    pass_criteria: No doc/docstring describes a shipped control as missing/expected-fail.
+    fail_action: Update or delete the stale note in the same change as the fix.
+    ref: references/security-testing-methodology.md#9
+
+  - id: DEPLOY-GATE-001
+    title: Pre-deploy gate — target confirmed, rollback known, smoke scripted
+    domain: deploy-ops
+    phase: decision
+    severity: critical
+    method: decision
+    oracle: [pre-deploy checklist]
+    applicability:
+      question: Will this change be deployed to a real environment?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        Before pushing the button: secrets in platform store (none added this change);
+        .gitignore + secret-scan clean; new controls have fail-mode + kill-switch;
+        security suite green in clean batch; deploy TARGET confirmed (account+project+
+        branch+mechanism); rollback command known; kill-switch flags known; post-deploy
+        smoke scripted (BOLA->404, quota->402, lockout->429+Retry-After, guard->400)
+        PLUS a regression pass that existing contracts still hold.
+    pass_criteria: Every line of the pre-deploy gate is checked off with evidence before deploy.
+    fail_action: Do not deploy until the gate is fully green. Production deploy is a gated, human-approved act.
+    ref: references/secrets-and-ops.md#4
+
+  # =========================================================================
+  # TIER 0 — THE FLOOR  (the OWASP basics; the apex drives the floor skills)
+  #   bedrock-security assumes these are done. The engine still CONFIRMS them so
+  #   "assumed" never silently means "absent". These reference the floor skills.
+  # =========================================================================
+
+  - id: FLOOR-A02
+    title: Crypto floor — TLS in transit, strong hashing, no weak algos
+    domain: secrets-logging
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP A02:2021]
+    applicability:
+      question: Does the app handle passwords or sensitive data?
+      auto_probe:
+        type: antipattern
+        patterns: ['md5\(', 'sha1\(', 'hashlib\.md5', 'hashlib\.sha1', 'DES', 'ECB']
+        langs: [py, ts, js]
+    proof:
+      description: Passwords hashed with bcrypt/argon2 (never MD5/SHA1); TLS 1.2+ in transit; sensitive data encrypted at rest.
+    pass_criteria: No weak hash/cipher on secrets; bcrypt/argon2 for passwords.
+    fail_action: Class-1 if passwords use a fast/broken hash.
+    ref: skill://security-guidance
+
+  - id: FLOOR-A03
+    title: Injection floor — parameterized queries everywhere
+    domain: injection-input
+    phase: static
+    severity: critical
+    method: static-scan
+    oracle: [OWASP A03:2021, CWE-89]
+    applicability:
+      question: Does the app build any SQL/queries?
+      auto_probe:
+        type: antipattern
+        patterns: ['f"SELECT', "f'SELECT", '"SELECT .*" \+', 'execute\(.*%.*%', 'format\(.*SELECT', 'query = `SELECT.*\$\{']
+        langs: [py, ts, js]
+    proof:
+      description: No string-built SQL. Parameterized queries / ORM only. (Confirmed at depth by INJ-001 adversarial test.)
+    pass_criteria: Zero string-interpolated SQL; all queries parameterized.
+    fail_action: Class-1. Parameterize.
+    ref: skill://owasp-top-10
+
+  - id: FLOOR-A05
+    title: Misconfig floor — no stack traces / debug in production
+    domain: deploy-ops
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP A05:2021]
+    applicability:
+      question: Does the app run in a production environment?
+      auto_probe:
+        type: antipattern
+        patterns: ['debug=True', 'DEBUG\s*=\s*True', 'app\.run\(.*debug=True', 'NODE_ENV.*development', 'traceback.*response']
+        langs: [py, ts, js]
+    proof:
+      description: Production must not expose stack traces, debug mode, or filesystem paths in error bodies.
+    pass_criteria: Debug off in prod; error bodies carry no stack trace / path / internal detail.
+    fail_action: Class-1/2. Disable debug; sanitize error responses.
+    ref: skill://owasp-top-10
+
+  - id: FLOOR-A08
+    title: Integrity floor — safe deserialization (no pickle/yaml.load on untrusted)
+    domain: injection-input
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP A08:2021, CWE-502]
+    applicability:
+      question: Does the app deserialize external/untrusted data?
+      auto_probe:
+        type: antipattern
+        patterns: ['pickle\.loads', 'yaml\.load\((?!.*Loader)', 'eval\(', 'marshal\.loads', 'unserialize']
+        langs: [py, ts, js]
+    proof:
+      description: Never pickle.loads / yaml.load (unsafe) / eval on untrusted input. Use JSON or yaml.safe_load.
+    pass_criteria: No unsafe deserialization of untrusted data.
+    fail_action: Class-1. Switch to safe parsers.
+    ref: skill://owasp-top-10
+
+  - id: FLOOR-A09
+    title: Logging floor — security events logged, no secrets/PII in logs
+    domain: secrets-logging
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [OWASP A09:2021, CWE-532]
+    applicability:
+      question: Does the app log anything?
+      auto_probe:
+        type: antipattern
+        patterns: ['log.*password', 'log.*token', 'print\(.*password', 'logger.*request\.body', 'console\.log\(.*password']
+        langs: [py, ts, js]
+    proof:
+      description: "Log login/logout/permission-change events; NEVER log passwords, tokens, full request bodies on auth endpoints, or PII. (Depth: SEC-LEAK-001 + the central scrubber.)"
+    pass_criteria: Security events logged; no secret/PII reaches a log sink.
+    fail_action: Class-1/2. Add the central scrubber; remove body logging on auth routes.
+    ref: skill://owasp-top-10
+
+  # =========================================================================
+  # ADDITIONS 2026-06-18 — extracted from 6 creator reels (transcript + on-screen
+  # frames) + the mukul975/Anthropic-Cybersecurity-Skills corpus (754 skills,
+  # Apache-2.0). Each carries a `source:` for provenance (MEDIA-INTAKE.md pipeline).
+  # See references/framework-mappings.md and references/cyber-skills-catalog.md.
+  # =========================================================================
+
+  # ---- client-exposure (NEW cluster: frontend/build-time leakage) ----
+
+  - id: CLIENT-ENV-001
+    title: No secret behind a client-exposed env prefix
+    domain: client-exposure
+    phase: static
+    severity: critical
+    method: static-scan
+    oracle: [CWE-200, CWE-615, OWASP A02:2021]
+    frameworks: { nist_csf: [PR.DS], mitre_attack: [T1552] }
+    applicability:
+      question: Is this a frontend/bundled app (Next.js, Vite, CRA, Expo) reading env vars?
+      auto_probe:
+        type: antipattern
+        patterns: ['(NEXT_PUBLIC_|VITE_|REACT_APP_|EXPO_PUBLIC_|PUBLIC_)\w*(KEY|SECRET|TOKEN|PASSWORD|SERVICE_ROLE|PRIVATE)', 'service_role']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Anything with a client-exposed prefix (NEXT_PUBLIC_, VITE_, REACT_APP_,
+        EXPO_PUBLIC_, PUBLIC_) is compiled INTO the browser bundle and readable by
+        anyone. No API key/secret/token may carry such a prefix. Supabase: only the
+        anon key is client-safe; the service_role key must never reach the client.
+      templates: { typescript-node: templates/typescript-node/client_env_exposure.test.ts }
+    pass_criteria: No secret-bearing var uses a client-exposed prefix; service_role never client-side.
+    fail_action: Class-1. Move the secret server-side; rotate it (assume exposed).
+    ref: references/secrets-and-ops.md#2
+    source: "intake 2026-06-18 reel4 (instagram.com/reel/DZU-RaVRCrt) + reel5 (DYDezT5xnIS) anon-vs-service_role"
+
+  - id: AUTH-STORAGE-001
+    title: Auth token/session not stored in localStorage/sessionStorage
+    domain: client-exposure
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [CWE-922, OWASP A07:2021]
+    frameworks: { nist_csf: [PR.AA, PR.DS] }
+    applicability:
+      question: Does the frontend persist an auth token/session client-side?
+      auto_probe:
+        type: antipattern
+        patterns: ['(localStorage|sessionStorage)\.setItem\([^)]*(token|jwt|access|refresh|session|auth)', 'localStorage\[[^]]*(token|jwt|auth)']
+        langs: [ts, js]
+    proof:
+      description: >
+        A token in localStorage/sessionStorage is readable by any XSS. Store auth in an
+        HttpOnly+Secure+SameSite cookie (or keep the access token in memory only). Also
+        clear client storage on logout/tab-close; never persist PII (email, phone,
+        national-id) client-side.
+      templates: { typescript-node: templates/typescript-node/auth_storage.test.ts }
+    pass_criteria: No auth token/PII in localStorage/sessionStorage; tokens in HttpOnly cookie or memory.
+    fail_action: Class-1/2. Move token to HttpOnly cookie; clear storage on logout.
+    ref: references/more-controls.md#8
+    source: "intake 2026-06-18 reel1 (instagram.com/reel/DZsXW-HonCi) #1 + reel4 (DZU-RaVRCrt)"
+
+  - id: SOURCEMAP-001
+    title: Production source maps are not publicly served
+    domain: client-exposure
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [CWE-540, OWASP A05:2021]
+    applicability:
+      question: Is this a bundled frontend (Next.js/Vite/webpack) deployed to prod?
+      auto_probe:
+        type: antipattern
+        patterns: ['productionBrowserSourceMaps:\s*true', 'sourcemap:\s*true', 'devtool:\s*[\x27"]source-map']
+        langs: [ts, js]
+    proof:
+      description: >
+        Public prod source maps expose your original TSX/JS source (logic, comments,
+        sometimes secrets) in DevTools. Disable prod browser source maps, or restrict
+        .map files from public serving.
+    pass_criteria: No publicly served .map files in production; prod sourcemaps disabled or access-controlled.
+    fail_action: Class-2. Disable productionBrowserSourceMaps / restrict .map serving.
+    ref: references/secrets-and-ops.md#3
+    source: "intake 2026-06-18 reel4 (instagram.com/reel/DZU-RaVRCrt)"
+
+  # ---- access-control additions ----
+
+  - id: AUTHZ-SERVER-001
+    title: Authorization enforced server-side (no client-side-only role checks)
+    domain: access-control
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP A01:2021, OWASP API5:2023, CWE-602]
+    frameworks: { nist_csf: [PR.AA], mitre_attack: [T1548] }
+    applicability:
+      question: Does the app gate admin/privileged UI or actions by role?
+      auto_probe:
+        type: antipattern
+        patterns: ['if\s*\(\s*(user|currentUser|session)\.(isAdmin|role|is_admin)', 'user\.role\s*===\s*[\x27"]admin']
+        langs: [ts, js]
+    proof:
+      description: >
+        A client-side `if (user.isAdmin)` only hides the button — the API must re-check.
+        Call every privileged endpoint directly with a NON-admin (but valid) token ->
+        must 403, regardless of what the UI shows. Companion to BFLA-001.
+      templates: { typescript-node: templates/typescript-node/server_authz.test.ts }
+    pass_criteria: Every privileged action is denied (403) server-side for a non-privileged token.
+    fail_action: Class-1. Enforce authz on the server; client checks are UX only.
+    ref: references/hardening-playbook.md#5b
+    source: "intake 2026-06-18 reel1 (instagram.com/reel/DZsXW-HonCi) #2"
+
+  - id: AUTHN-REQUIRED-001
+    title: Every data endpoint requires authentication (the unauthenticated-request test)
+    domain: access-control
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP API2:2023, OWASP A01:2021]
+    frameworks: { nist_csf: [PR.AA], mitre_attack: [T1190] }
+    applicability:
+      question: Does the app expose endpoints that read/return data?
+      auto_probe: { type: manual }
+    proof:
+      description: >
+        The "Postman test": hit every data endpoint with NO credentials -> must 401,
+        never 200-with-data. An open endpoint lets any unauthenticated user query your
+        DB. Enumerate from the route inventory (INV-001) and probe each anonymously.
+      templates:
+        python-fastapi: templates/python-fastapi/test_authn_required.py
+        typescript-node: templates/typescript-node/authn_required.test.ts
+    pass_criteria: Every non-public endpoint returns 401 to an unauthenticated request.
+    fail_action: Class-1. Add an auth guard to the endpoint (default-deny).
+    ref: references/hardening-playbook.md#1
+    source: "intake 2026-06-18 reel5 (instagram.com/reel/DYDezT5xnIS) + reel6 (DXz5iIwxiuF) #1"
+
+  - id: SUPABASE-RLS-001
+    title: Row-Level Security enabled on every table holding user/tenant data
+    domain: access-control
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP API1:2023, CWE-639]
+    applicability:
+      question: Does the app use Supabase/Postgres with client-accessible tables?
+      auto_probe:
+        type: grep_present
+        patterns: ['supabase', 'createClient', 'enable row level security', 'ENABLE ROW LEVEL SECURITY', 'auth\.uid\(\)']
+        langs: [ts, js, sql]
+    proof:
+      description: >
+        With Supabase the anon key reaches the DB directly from the browser; the ONLY
+        thing stopping cross-tenant reads is RLS. Every table with user/tenant data must
+        have RLS ENABLED and a policy scoped to auth.uid(). The "#1 Supabase gap" is a
+        table with RLS off. Prove with the cross-tenant RLS test.
+      templates: { supabase-postgres: templates/supabase-postgres/bola_rls.sql }
+    pass_criteria: RLS enabled on all user/tenant tables; cross-tenant read/write returns nothing.
+    fail_action: Class-1. Enable RLS + owner-scoped policy on every such table.
+    ref: references/hardening-playbook.md#1
+    source: "intake 2026-06-18 reel5 (instagram.com/reel/DYDezT5xnIS) RLS the #1 Supabase gap"
+
+  - id: EXCESSDATA-001
+    title: API responses expose only needed fields (no excessive data exposure)
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API3:2023]
+    applicability:
+      question: Do API responses serialize whole DB objects/rows?
+      auto_probe:
+        type: antipattern
+        patterns: ['res\.json\((user|row|record|data)\)', 'return jsonify\((user|row|record)', 'SELECT \*']
+        langs: [py, ts, js, sql]
+    proof:
+      description: >
+        Returning the full row leaks fields the client never needs (password_hash,
+        internal flags, other users' PII). Serialize via an explicit allow-list
+        (response schema/DTO), not the raw model. Test: fetch an object and assert no
+        sensitive field is present.
+    pass_criteria: Responses contain only allow-listed fields; no secret/internal/PII field leaks.
+    fail_action: Class-1/2. Use explicit response schemas (DTOs), never raw models.
+    ref: references/hardening-playbook.md#1
+    source: "intake 2026-06-18 ACS corpus (exploiting-excessive-data-exposure-in-api)"
+
+  - id: APIINV-001
+    title: API inventory complete — no shadow/undocumented/legacy endpoints
+    domain: access-control
+    phase: decision
+    severity: medium
+    method: decision
+    oracle: [OWASP API9:2023]
+    applicability:
+      question: Does the app expose an HTTP API?
+      auto_probe: { type: manual }
+    proof:
+      description: >
+        Shadow endpoints (old /v1, debug, /test, unlinked admin) are unmonitored and
+        often unprotected. Maintain a complete inventory (from INV-001), retire legacy
+        versions, and ensure every live route is in the auth + rate-limit + logging map.
+    pass_criteria: Every reachable route is inventoried, versioned, and covered by the standard controls.
+    fail_action: Class-2. Enumerate + retire/guard shadow endpoints.
+    ref: references/security-testing-methodology.md#8
+    source: "intake 2026-06-18 ACS corpus (detecting-shadow-api-endpoints, performing-api-inventory)"
+
+  - id: PATHTRAV-001
+    title: Path/directory traversal blocked on any file-path input
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [CWE-22, OWASP A01:2021]
+    applicability:
+      question: Does any endpoint take a filename/path or serve files by user input?
+      auto_probe:
+        type: grep_present
+        patterns: ['send_file', 'sendFile', 'os\.path\.join\([^)]*request', 'readFile\([^)]*req', 'path\.join\([^)]*req']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Inputs like `../../etc/passwd`, encoded `%2e%2e%2f`, and absolute paths must not
+        escape the intended directory. Canonicalize and confirm the resolved path stays
+        within the allowed root; reject otherwise.
+      templates: { python-fastapi: templates/python-fastapi/test_path_traversal.py }
+    pass_criteria: Traversal payloads (encoded + absolute) cannot read files outside the allowed root.
+    fail_action: Class-1. Canonicalize + confine to an allow-listed base dir.
+    ref: references/more-controls.md#1
+    source: "intake 2026-06-18 ACS corpus (performing-directory-traversal-testing)"
+
+  - id: REDIRECT-001
+    title: No open redirect on user-supplied redirect/next URLs
+    domain: access-control
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [CWE-601, OWASP A01:2021]
+    applicability:
+      question: Does the app redirect to a user-supplied URL (next/redirect/returnTo)?
+      auto_probe:
+        type: grep_present
+        patterns: ['redirect\([^)]*(request|req|params|query)', 'returnTo', 'redirect_url', 'window\.location\s*=']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        An attacker-controlled redirect target enables phishing and OAuth token theft.
+        Allow only relative paths or an allow-list of hosts; reject absolute/external
+        URLs and protocol-relative (//evil.com) targets.
+      templates: { python-fastapi: templates/python-fastapi/test_open_redirect.py }
+    pass_criteria: External/protocol-relative redirect targets are rejected; only allow-listed destinations pass.
+    fail_action: Class-2. Allow-list redirect targets; default to a known-safe path.
+    ref: references/more-controls.md#1
+    source: "intake 2026-06-18 ACS corpus (testing-for-open-redirect-vulnerabilities)"
+
+  - id: WEBSOCKET-001
+    title: WebSocket endpoints validate Origin and authenticate
+    domain: access-control
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [CWE-1385, OWASP A01:2021]
+    applicability:
+      question: Does the app expose WebSocket endpoints?
+      auto_probe:
+        type: grep_present
+        patterns: ['websocket', 'WebSocket', 'socket\.io', 'wss://', '\.on\([\x27"]connection']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        WebSockets are not protected by SOP/CORS. Validate the Origin header on the
+        handshake (cross-site WebSocket hijacking) and authenticate the connection
+        (token in the handshake), then authorize each message.
+    pass_criteria: WS handshakes from unauthorized origins/without auth are rejected.
+    fail_action: Class-2. Validate Origin + authenticate the WS handshake.
+    ref: references/more-controls.md#8
+    source: "intake 2026-06-18 ACS corpus (testing-websocket-api-security)"
+
+  # ---- authn-session-jwt additions ----
+
+  - id: ACCT-VERIFY-001
+    title: Account/email verification (and 2FA option) so identities can't be spoofed
+    domain: authn-session-jwt
+    phase: decision
+    severity: medium
+    method: decision
+    oracle: [OWASP A07:2021, OWASP ASVS V2]
+    applicability:
+      question: Can users self-register with an email/identity?
+      auto_probe: { type: manual }
+    proof:
+      description: >
+        Without email verification, anyone can sign up AS anyone (claim someone else's
+        email/identity). Require verified email before privileged use; offer 2FA/OTP for
+        sensitive accounts. See JWT-002 for the 2FA-token-purpose trap.
+    pass_criteria: Email verification enforced before trust; 2FA available for sensitive roles.
+    fail_action: Class-2. Add email verification; offer TOTP/OTP 2FA.
+    ref: references/hardening-playbook.md#5b
+    source: "intake 2026-06-18 reel1 (instagram.com/reel/DZsXW-HonCi) #3"
+
+  - id: PWPOLICY-001
+    title: Password policy + breached-password (HIBP) check at register/reset
+    domain: authn-session-jwt
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [NIST SP 800-63B, OWASP A07:2021, OWASP ASVS V2.1.7]
+    applicability:
+      question: Does the app have password-based registration / reset?
+      auto_probe: { type: manual }
+    proof:
+      description: >
+        Enforce a length-first policy (>=8, ideally >=12; allow long passphrases) and
+        check candidates against a breached-password corpus (HaveIBeenPwned k-anonymity
+        range API) — reject known-leaked passwords. Avoid the composition rules NIST
+        800-63B advises against.
+      templates: { python-fastapi: templates/python-fastapi/test_password_policy.py }
+    pass_criteria: Weak/known-breached passwords are rejected at register and reset.
+    fail_action: Class-2. Add length policy + HIBP range-API check.
+    ref: references/hardening-playbook.md#4
+    source: "intake 2026-06-18 reel1 (instagram.com/reel/DZsXW-HonCi) #5"
+
+  - id: TOKEN-ROTATE-001
+    title: Refresh-token rotation + working logout/session invalidation
+    domain: authn-session-jwt
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP A07:2021, RFC 9700]
+    applicability:
+      question: Does the app issue refresh tokens / long-lived sessions?
+      auto_probe:
+        type: grep_present
+        patterns: ['refresh_token', 'refreshToken', 'rotate', 'revoke', 'logout', 'signOut']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        On refresh, the old refresh token must be invalidated (rotation) so a stolen one
+        can't be reused; reuse of a rotated token should revoke the family. Logout must
+        actually invalidate the session/refresh token server-side, not just drop the
+        client copy.
+      templates: { python-fastapi: templates/python-fastapi/test_token_rotation.py }
+    pass_criteria: Rotated/old refresh token is rejected; logout invalidates the server-side session.
+    fail_action: Class-1/2. Implement rotation + server-side revocation on logout.
+    ref: references/hardening-playbook.md#5
+    source: "intake 2026-06-18 reel5 (instagram.com/reel/DYDezT5xnIS) refresh-rotation + logout-invalidation"
+
+  - id: COOKIE-FLAGS-001
+    title: Auth/session cookies set HttpOnly + Secure + SameSite
+    domain: authn-session-jwt
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP A05:2021, CWE-1004, CWE-614]
+    applicability:
+      question: Does the app set auth/session cookies?
+      auto_probe:
+        type: grep_present
+        patterns: ['set_cookie', 'Set-Cookie', 'res\.cookie', 'response\.set_cookie', 'cookies\.set']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Every auth/session cookie must be HttpOnly (no JS access -> XSS can't steal it),
+        Secure (HTTPS only), and SameSite=Lax/Strict (CSRF defense-in-depth). Verify the
+        actual Set-Cookie header on the login response, not just the config intent.
+    pass_criteria: Auth cookies carry HttpOnly + Secure + SameSite on the live response.
+    fail_action: Class-1/2. Add the missing attributes.
+    ref: references/more-controls.md#8
+    source: "intake 2026-06-18 reel4 (instagram.com/reel/DZU-RaVRCrt) + reel5 cookie-configuration"
+
+  - id: OAUTH-001
+    title: OAuth2/OIDC hardening — exact redirect_uri, state/PKCE, scope minimization
+    domain: authn-session-jwt
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [RFC 9700, OWASP A07:2021]
+    applicability:
+      question: Does the app implement OAuth2/OIDC (social login, third-party authz)?
+      auto_probe:
+        type: grep_present
+        patterns: ['oauth', 'redirect_uri', 'openid', 'code_challenge', 'id_token']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Validate redirect_uri by EXACT match against an allow-list (no prefix/substring);
+        require the `state` param (CSRF) and PKCE for public clients; validate id_token
+        aud/iss/nonce; request least-privilege scopes. Test tampered redirect_uri,
+        missing/replayed state, downgraded PKCE -> all rejected.
+      templates: { python-fastapi: templates/python-fastapi/test_oauth.py }
+    pass_criteria: redirect_uri exact-matched; state+PKCE enforced; id_token claims validated; scopes minimal.
+    fail_action: Class-1. Pin redirect_uri; enforce state+PKCE; validate token claims.
+    ref: references/hardening-playbook.md#5
+    source: "intake 2026-06-18 ACS corpus (configuring-oauth2-authorization-flow, exploiting-oauth-misconfiguration)"
+
+  # ---- injection-input additions ----
+
+  - id: XXE-001
+    title: XML parsing disables external entities (no XXE)
+    domain: injection-input
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [CWE-611, OWASP A05:2021]
+    applicability:
+      question: Does the app parse XML (or SVG/DOCX/SOAP) from users?
+      auto_probe:
+        type: grep_present
+        patterns: ['etree', 'lxml', 'xml\.dom', 'minidom', 'SAXParser', 'DocumentBuilder', 'libxml']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        XXE lets a crafted document read local files or trigger SSRF via external
+        entities. Disable DTD/external-entity resolution (e.g. defusedxml in Python;
+        disable external entities in the JS/Java parser). Test a payload with an external
+        entity -> not resolved.
+      templates: { python-fastapi: templates/python-fastapi/test_xxe.py }
+    pass_criteria: External entities/DTDs are not resolved; XXE payload cannot read files or fetch URLs.
+    fail_action: Class-1. Disable external entities; use a hardened/defused XML parser.
+    ref: references/more-controls.md#1
+    source: "intake 2026-06-18 ACS corpus (testing-for-xxe-injection-vulnerabilities)"
+
+  - id: SSTI-001
+    title: No server-side template injection on user input
+    domain: injection-input
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [CWE-1336, OWASP A03:2021]
+    applicability:
+      question: Does the app render templates (Jinja2/Handlebars/EJS/Twig) with user input?
+      auto_probe:
+        type: antipattern
+        patterns: ['render_template_string', 'Template\([^)]*request', 'from_string', 'new Function\(', 'Handlebars\.compile\([^)]*req']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Concatenating user input into a template string lets an attacker execute template
+        (and often host) code (e.g. {{7*7}} -> 49, then RCE gadgets). Never build
+        templates from user input; pass user data as template VARIABLES, not as the
+        template source. Test {{7*7}} / ${7*7} -> rendered literally, not evaluated.
+      templates: { python-fastapi: templates/python-fastapi/test_ssti.py }
+    pass_criteria: Template-expression payloads are not evaluated; user data is only ever a variable.
+    fail_action: Class-1. Stop compiling templates from user input; sandbox if unavoidable.
+    ref: references/security-testing-methodology.md#5
+    source: "intake 2026-06-18 ACS corpus (exploiting-template-injection-vulnerabilities)"
+
+  - id: NOSQLI-001
+    title: No NoSQL/operator injection (Mongo/JSON query)
+    domain: injection-input
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [CWE-943, OWASP A03:2021]
+    applicability:
+      question: Does the app query a NoSQL store (Mongo, etc.) with user input?
+      auto_probe:
+        type: grep_present
+        patterns: ['collection\.find', 'mongoose', 'mongo', '\$where', '\$ne']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Passing a raw JSON body into a query lets `{"$ne": null}` / `{"$gt": ""}` bypass
+        auth filters, and `$where` run JS. Coerce/validate types (a password field must
+        be a string, not an object); never pass user objects straight into the query.
+      templates: { typescript-node: templates/typescript-node/nosql_injection.test.ts }
+    pass_criteria: Operator-injection payloads (objects where scalars expected) are rejected.
+    fail_action: Class-1. Enforce types; reject query operators in user-supplied values.
+    ref: references/security-testing-methodology.md#5
+    source: "intake 2026-06-18 ACS corpus (exploiting-nosql-injection-vulnerabilities)"
+
+  - id: HOSTHDR-001
+    title: Host/X-Forwarded-Host header not trusted for security decisions
+    domain: injection-input
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [CWE-644]
+    applicability:
+      question: Does the app build URLs (password-reset links, absolute redirects) from the Host header?
+      auto_probe:
+        type: grep_present
+        patterns: ['request\.host', 'req\.headers\.host', 'X-Forwarded-Host', 'get_host', 'url_root']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        A spoofed Host/X-Forwarded-Host poisons password-reset links (sent to your user
+        pointing at the attacker's host) and cache. Use a configured canonical
+        host/allow-list for generating absolute URLs; never echo the request Host.
+    pass_criteria: Absolute URLs use a configured host; a spoofed Host does not change generated links.
+    fail_action: Class-2. Pin a canonical host; allow-list trusted hosts.
+    ref: references/hardening-playbook.md#3
+    source: "intake 2026-06-18 ACS corpus (testing-for-host-header-injection)"
+
+  # ---- headers-cors-csrf addition ----
+
+  - id: CLICKJACK-001
+    title: Clickjacking blocked (frame-ancestors / X-Frame-Options)
+    domain: headers-cors-csrf
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [CWE-1021, OWASP A05:2021]
+    applicability:
+      question: Does the app serve HTML pages (especially with sensitive actions)?
+      auto_probe:
+        type: grep_present
+        patterns: ['frame-ancestors', 'X-Frame-Options', 'frameguard']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Without frame-ancestors/X-Frame-Options, your page can be invisibly iframed and
+        clickjacked. Set CSP frame-ancestors 'none' (or 'self'), or X-Frame-Options DENY.
+        Verify the header on an actual page response.
+    pass_criteria: Sensitive pages send CSP frame-ancestors or X-Frame-Options DENY.
+    fail_action: Class-2. Add frame-ancestors 'none' / X-Frame-Options DENY.
+    ref: references/hardening-playbook.md#7
+    source: "intake 2026-06-18 ACS corpus (performing-clickjacking-attack-test)"
+
+  # ---- rate-abuse addition ----
+
+  - id: PAGINATION-001
+    title: Collection endpoints enforce pagination + a max page size
+    domain: rate-abuse
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [OWASP API4:2023, CWE-770]
+    applicability:
+      question: Are there list/collection endpoints returning many records?
+      auto_probe:
+        type: grep_present
+        patterns: ['findAll', '\.all\(\)', 'per_page', 'page_size', 'limit', 'offset']
+        langs: [py, ts, js, sql]
+    proof:
+      description: >
+        Returning everything lets one request dump the whole table (data exfiltration +
+        resource exhaustion). Enforce server-side pagination with a hard max page size; a
+        request for limit=10000000 must be capped, not honored.
+      templates: { python-fastapi: templates/python-fastapi/test_pagination.py }
+    pass_criteria: List endpoints cap results at a max page size regardless of client-requested size.
+    fail_action: Class-2. Enforce a server-side max limit + pagination.
+    ref: references/more-controls.md#5
+    source: "intake 2026-06-18 reel6 (instagram.com/reel/DXz5iIwxiuF) #2"
+
+  # ---- secrets-logging addition ----
+
+  - id: ERRORLEAK-001
+    title: Error responses are sanitized (no stack trace / SQL / internals to client)
+    domain: secrets-logging
+    phase: adversarial
+    severity: medium
+    method: adversarial-test
+    oracle: [CWE-209, OWASP A05:2021]
+    applicability:
+      question: Does the app return errors to clients?
+      auto_probe:
+        type: antipattern
+        patterns: ['return.*traceback\.format_exc', 'jsonify\([^)]*str\(e\)', 'res\.(send|json)\([^)]*err\.(stack|message)', 'printStackTrace']
+        langs: [py, ts, js]
+    proof:
+      description: >
+        Raw errors (stack traces, SQL messages, file paths, framework versions) hand
+        attackers a map of your system. Return a generic message + a correlation id to
+        the client; log the detail server-side only. Force a 500 and a 4xx -> assert the
+        body has no stack/SQL/path.
+      templates: { python-fastapi: templates/python-fastapi/test_error_sanitization.py }
+    pass_criteria: Client error bodies carry no stack trace, SQL text, file path, or internal detail.
+    fail_action: Class-2. Generic client errors + server-side detail logging.
+    ref: references/hardening-playbook.md#7
+    source: "intake 2026-06-18 reel6 (instagram.com/reel/DXz5iIwxiuF) #3"
+
+  # ---- deps-supplychain addition ----
+
+  - id: CISEC-001
+    title: CI pipeline runs SAST + dependency (SCA) + secret scanning as a gate
+    domain: deps-supplychain
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [OWASP A06:2021, OWASP A08:2021]
+    applicability:
+      question: Does the repo have a CI pipeline?
+      auto_probe:
+        type: grep_present
+        patterns: ['gitleaks', 'trufflehog', 'snyk', 'semgrep', 'codeql', 'osv-scanner', 'trivy', 'dependabot', 'pip-audit', 'npm audit', 'zap']
+        langs: [yaml]
+    proof:
+      description: >
+        Shift-left: the pipeline should run a secret scan (gitleaks), a dependency/SCA
+        scan (pip-audit/npm audit/snyk/osv), and a SAST pass (semgrep/codeql), and FAIL
+        the build on high/critical. Optionally a DAST pass (OWASP ZAP) on a preview.
+    pass_criteria: CI runs secret + SCA + SAST scans and gates on high/critical findings.
+    fail_action: Class-2. Add the scanners to CI and make high/critical fail the build.
+    ref: references/more-controls.md#6
+    source: "intake 2026-06-18 ACS corpus (integrating-sast/dast, secret-scanning-in-ci-cd, sca-dependency-scanning)"

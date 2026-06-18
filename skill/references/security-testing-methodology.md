@@ -217,3 +217,30 @@ Class-1 / unimplemented" **rot the moment the control ships**. Then:
 the *same change*. A test whose docstring says "this is expected to fail because
 the control doesn't exist" must be rewritten the moment the control exists — the
 docstring is part of the test's correctness.
+
+## 10. Where security tests sit (the pyramid) + stub vs mock
+
+> Folded in from two testing-methodology reels (intake 2026-06-18). Not security
+> controls themselves, but they shape HOW the adversarial suite is built.
+
+**The test pyramid** — many cheap **unit** tests, fewer **integration**, very few
+expensive **end-to-end**. Security tests live at all three levels, but the
+highest-value adversarial ones (BOLA, token-purpose/2FA-bypass, quota race) are
+**integration/e2e** — they cross the auth/identity/trust boundary that unit tests
+mock away. Budget for them deliberately; "it's an expensive e2e" must never be the
+reason the 2FA-bypass test (JWT-002) never gets written. Cheap unit checks (regex
+ReDoS, scrubber patterns) at the base; the boundary-crossing proofs at the top.
+
+**Stub vs mock (and why it matters for security):**
+- A **stub** supplies canned data so the code runs (a fake user store returning a
+  seeded user). Use stubs to *set up* the adversarial scenario (identity A owns
+  object X; identity B exists).
+- A **mock** asserts an *interaction happened*: the rate-limiter was consulted, the
+  scrubber was invoked, the LLM was **not** dispatched on a blocked input. Use mocks
+  to *prove a control fired* — e.g. assert `scan_input` was called and raised
+  **before** `model.dispatch`, which proves the guard runs pre-dispatch (LLM-INJ-001),
+  an ordering a stub can't verify.
+- **The trap:** a mock that asserts "the code did what I assume" is grade-your-own-
+  homework (§1), not proof the security property holds. Pair interaction-mocks with
+  **real adversarial inputs** and an external oracle. The isolation discipline (§4)
+  keeps these multi-level tests honest in a batch run.

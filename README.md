@@ -38,6 +38,25 @@ in production.
 > enumerate valid IDs. Scope the lookup by `(owner_id, object_id)` in the query
 > itself, and make 'not yours' byte-indistinguishable from 'never existed'."_
 
+## Run it — now an executable engine
+
+Bedrock is no longer just a reading. It ships a **gated sweep engine** that frames a
+target, decides what applies, and **proves each control with evidence** — refusing a
+green verdict while anything applicable is still unproven.
+
+```bash
+python skill/engine/sweep.py <target-repo>      # add --run-commands for scanner probes
+```
+
+- **`skill/engine/registry.yaml`** — **76 checks** as machine-readable records (oracle ·
+  applicability probe · proof method · pass criteria): the single source of truth.
+- **`skill/engine/sweep.py`** — the runner; emits a PASS / FAIL / N-A / NEEDS-PROOF
+  ledger and **exits non-zero while any applicable check is open** (the CI gate).
+- **`skill/PROTOCOL.md`** — the forced 7-stage procedure (Frame → Applicability →
+  Static → Adversarial → Decision → Triage → Verdict). Prove, never claim.
+- **`skill/templates/`** — runnable adversarial proofs for Python/FastAPI, TypeScript/
+  Node, and Supabase/Postgres.
+
 ## What's inside
 
 | File | What it covers |
@@ -48,6 +67,11 @@ in production.
 | [`skill/references/ai-llm-security.md`](skill/references/ai-llm-security.md) | **LLM/AI security**: the two attack directions, the cost-aware escalation ladder (cheap regex → managed guardrails), a zero-dependency Tier-1 guard pattern, fail-open + kill-switch design, and the ReDoS check every regex guard needs. |
 | [`skill/references/secrets-and-ops.md`](skill/references/secrets-and-ops.md) | **Secrets, env & secure ops**: the fail-open vs fail-closed decision table, secrets/env do's & don'ts, the deploy footguns (wrong account, push≠deploy, local-ahead divergence, multi-worker state), and incident-time muscle memory. |
 | [`skill/references/more-controls.md`](skill/references/more-controls.md) | The rounding-out controls: **SSRF**, inbound **webhook signature verification**, **timing-safe comparison**, **idempotency keys**, **request-size/decompression limits**, **dependency/supply-chain** hygiene, **audit-log integrity**, and **CSRF/cookie nuance for SPAs**. |
+| [`skill/engine/`](skill/engine) | **The sweep engine** — `registry.yaml` (76 structured checks), `sweep.py` (the gated runner), and the schema/probe reference. |
+| [`skill/PROTOCOL.md`](skill/PROTOCOL.md) | The **forced, ordered procedure** that drives a sweep and gates the "secure" claim. |
+| [`skill/templates/`](skill/templates) | **Per-stack adversarial proof templates** (pytest+httpx · vitest+supertest · Supabase RLS/SQL). |
+| [`skill/references/framework-mappings.md`](skill/references/framework-mappings.md) | Every check crosswalked to **OWASP Top 10 / API Top 10, MITRE ATT&CK, NIST CSF, D3FEND, ATLAS, AI RMF**. |
+| [`skill/references/cyber-skills-catalog.md`](skill/references/cyber-skills-catalog.md) | The **754-skill DFIR/offensive corpus** (Apache-2.0) captured by reference — which techniques became checks, and how to pull a playbook on demand. |
 
 ## The ideas you won't find in one generic doc
 
