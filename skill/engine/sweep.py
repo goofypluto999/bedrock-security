@@ -57,6 +57,7 @@ IGNORE_DIRS = {
     "__pycache__", ".bedrock", "coverage", ".turbo", ".cache", "vendor",
     "target", ".mypy_cache", ".pytest_cache", ".idea", ".vscode", "out",
     ".claude", "worktrees", ".worktrees",  # agent/IDE worktree copies — not the real tree
+    "probe_selftest",  # bedrock's own FP/FN regression fixtures — intentionally "vulnerable"
 }
 EXT_LANG = {
     ".py": "py",
@@ -251,7 +252,13 @@ def evaluate(check: dict, corpus: Corpus, stacks: list[str], run_commands: bool)
             res["applicable"] = True
             res["evidence"] = [{"file": f, "line": 0, "text": ""} for f in found]
             if also:
-                missing = [a for a in also if not corpus.search([a], None)]
+                blob = ""
+                for _f in found:
+                    try:
+                        blob += (corpus.root / _f).read_text(encoding="utf-8", errors="ignore")
+                    except OSError:
+                        pass
+                missing = [a for a in also if not re.search(a, blob)]
                 if missing:
                     res["status"] = "FAIL"
                     res["confidence"] = "auto"

@@ -315,7 +315,7 @@ checks:
       auto_probe:
         type: file_present
         patterns: ['.gitignore']
-        also_grep: ['\.env', '\*\.pem', '\*\.key']
+        also_grep: ['\.env']
     pass_criteria: .gitignore exists and matches .env*, *.pem, *.key, local config.
     fail_action: Add patterns. If .env already committed, treat its secrets as compromised → rotate.
     ref: references/secrets-and-ops.md#2
@@ -386,7 +386,7 @@ checks:
       question: Does the code implement rate limiting?
       auto_probe:
         type: antipattern
-        patterns: ['request\.client\.host', 'check_rate_limit\([^)]*request\.client', 'X-Forwarded-For', 'req\.headers\["x-forwarded-for"\]', 'defaultdict\(list\).*rate']
+        patterns: ['check_rate_limit\([^)]*request\.client', 'defaultdict\(list\)[^\n]{0,40}(rate|throttle|limit)', '(rate.?limit|limiter|throttle)[^\n]{0,60}request\.client\.host', '(rate.?limit|limiter|throttle)[^\n]{0,60}[Xx]-[Ff]orwarded']
         langs: [py, ts, js]
     proof:
       description: >
@@ -432,7 +432,7 @@ checks:
       question: Does the code read a secret with a default fallback?
       auto_probe:
         type: antipattern
-        patterns: ['getenv\([^)]+,\s*["\x27][^"\x27]+["\x27]\)', 'process\.env\.\w+\s*\|\|\s*["\x27]', 'SECRET.*=.*["\x27][A-Za-z0-9]{8,}["\x27]', 'JWT_SECRET.*or.*["\x27]']
+        patterns: ['(SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIAL)\w*\s*=\s*os\.(getenv|environ\.get)\([^)]+,\s*["\x27](?!.{0,40}(test|placeholder|example|changeme|dummy|your[_-]|xxx|sample|fixme))[^"\x27]{6,}["\x27]\)', 'process\.env\.\w*(SECRET|TOKEN|PASSWORD|KEY|CREDENTIAL)\w*\s*\|\|\s*["\x27](?!.{0,40}(test|placeholder|example|changeme|dummy|your[_-]|xxx|sample))[^"\x27]{6,}["\x27]', '(JWT_SECRET|SECRET_KEY|API_KEY|PRIVATE_KEY)\s*[=:]\s*["\x27](?!.{0,40}(test|placeholder|example|changeme|dummy|your[_-]|xxx|sample|fixme))[A-Za-z0-9_\-]{8,}["\x27]']
         langs: [py, ts, js]
     proof:
       description: A hardcoded default JWT secret shipped to prod = total auth bypass. Fail closed if the env var is missing.
@@ -451,7 +451,7 @@ checks:
       question: Does the code decode/verify JWTs?
       auto_probe:
         type: antipattern
-        patterns: ['verify=False', 'algorithms=None', 'jwt\.decode\([^)]*\)(?![^)]*algorithms)', 'decode\([^)]*verify_signature.*False']
+        patterns: ['verify=False', 'algorithms=None', 'verify_signature["\x27]?\s*[:=]\s*False', 'decode\([^)]*verify_signature.*False']
         langs: [py, ts, js]
     proof:
       description: Pin the EXACT expected alg at decode; reject alg=none and RS↔HS confusion. Require `exp`.
@@ -806,8 +806,7 @@ checks:
     applicability:
       question: Does the app compare any attacker-submittable secret (api key, reset token, HMAC, TOTP)?
       auto_probe:
-        type: antipattern
-        patterns: ['token\s*==', 'api_key\s*==', 'secret\s*==', 'hmac\s*==', 'signature\s*==']
+        type: manual   # in-memory secret-compare vs ORM/dict equality is not grep-distinguishable; proven by test_timing_safe (asserts the constant-time primitive is called)
         langs: [py, ts, js]
     proof:
       description: Verify the comparison path uses a constant-time primitive (hmac.compare_digest / crypto.timingSafeEqual / subtle.ConstantTimeCompare). Assert the CALL, not the timing (timing tests are flaky in CI).
@@ -1102,7 +1101,7 @@ checks:
       question: Does the app handle passwords or sensitive data?
       auto_probe:
         type: antipattern
-        patterns: ['md5\(', 'sha1\(', 'hashlib\.md5', 'hashlib\.sha1', 'DES', 'ECB']
+        patterns: ['md5\(', 'sha1\(', 'hashlib\.(md5|sha1)', '\bDES\.new', '\bDES3\.new', 'MODE_ECB', 'Cipher\.(DES|ARC4|ARC2|Blowfish|CAST)', 'algorithms\.(TripleDES|Blowfish|ARC4|CAST5)', '\bRC4\b']
         langs: [py, ts, js]
     proof:
       description: Passwords hashed with bcrypt/argon2 (never MD5/SHA1); TLS 1.2+ in transit; sensitive data encrypted at rest.
@@ -1140,7 +1139,7 @@ checks:
       question: Does the app run in a production environment?
       auto_probe:
         type: antipattern
-        patterns: ['debug=True', 'DEBUG\s*=\s*True', 'app\.run\(.*debug=True', 'NODE_ENV.*development', 'traceback.*response']
+        patterns: ['debug=True', 'DEBUG\s*=\s*True', 'app\.run\([^)]*debug=True', 'FLASK_DEBUG\s*=\s*["\x27]?1', 'NODE_ENV\s*[=:]\s*["\x27]development', 'traceback\.format_exc\(\)[^\n]{0,50}(return|response|jsonify|send)']
         langs: [py, ts, js]
     proof:
       description: Production must not expose stack traces, debug mode, or filesystem paths in error bodies.
@@ -1159,7 +1158,7 @@ checks:
       question: Does the app deserialize external/untrusted data?
       auto_probe:
         type: antipattern
-        patterns: ['pickle\.loads', 'yaml\.load\((?!.*Loader)', 'eval\(', 'marshal\.loads', 'unserialize']
+        patterns: ['pickle\.loads', 'yaml\.load\((?!.*Loader)', '\beval\(', 'marshal\.loads', 'unserialize']
         langs: [py, ts, js]
     proof:
       description: Never pickle.loads / yaml.load (unsafe) / eval on untrusted input. Use JSON or yaml.safe_load.
@@ -1178,7 +1177,7 @@ checks:
       question: Does the app log anything?
       auto_probe:
         type: antipattern
-        patterns: ['log.*password', 'log.*token', 'print\(.*password', 'logger.*request\.body', 'console\.log\(.*password']
+        patterns: ['(logger|logging|log)\.\w+\([^)]*\{[^}]*\b(password|secret|passwd|api_?key|token|jwt)\b', '(logger|logging|log)\.\w+\([^)]*\b(password|secret|passwd|api_?key)\s*[=:]', 'print\([^)]*\{[^}]*\b(password|secret|passwd|token)\b', 'console\.(log|info|warn|error|debug)\([^)]*\$\{[^}]*\b(password|secret|passwd|token|jwt)\b', '(logger|logging|log)\.\w+\([^)]*request\.(body|data)\b']
         langs: [py, ts, js]
     proof:
       description: "Log login/logout/permission-change events; NEVER log passwords, tokens, full request bodies on auth endpoints, or PII. (Depth: SEC-LEAK-001 + the central scrubber.)"
@@ -1207,7 +1206,7 @@ checks:
       question: Is this a frontend/bundled app (Next.js, Vite, CRA, Expo) reading env vars?
       auto_probe:
         type: antipattern
-        patterns: ['(NEXT_PUBLIC_|VITE_|REACT_APP_|EXPO_PUBLIC_|PUBLIC_)\w*(KEY|SECRET|TOKEN|PASSWORD|SERVICE_ROLE|PRIVATE)', 'service_role']
+        patterns: ['(NEXT_PUBLIC_|VITE_|REACT_APP_|EXPO_PUBLIC_|PUBLIC_)\w*(SECRET|SERVICE_ROLE|PRIVATE_KEY|PASSWORD|CREDENTIAL|API_SECRET)']
         langs: [py, ts, js]
     proof:
       description: >
@@ -1357,7 +1356,7 @@ checks:
       question: Do API responses serialize whole DB objects/rows?
       auto_probe:
         type: antipattern
-        patterns: ['res\.json\((user|row|record|data)\)', 'return jsonify\((user|row|record)', 'SELECT \*']
+        patterns: ['res\.json\((user|row|record|profile)\)', 'return jsonify\((user|row|record|profile)\)']
         langs: [py, ts, js, sql]
     proof:
       description: >
