@@ -56,6 +56,7 @@ IGNORE_DIRS = {
     ".git", "node_modules", ".venv", "venv", "env", "dist", "build", ".next",
     "__pycache__", ".bedrock", "coverage", ".turbo", ".cache", "vendor",
     "target", ".mypy_cache", ".pytest_cache", ".idea", ".vscode", "out",
+    ".claude", "worktrees", ".worktrees",  # agent/IDE worktree copies — not the real tree
 }
 EXT_LANG = {
     ".py": "py",
