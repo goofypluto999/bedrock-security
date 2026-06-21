@@ -1,0 +1,47 @@
+# bedrock-security — CI regression gate (Phase D: proof -> regression).
+#
+# Drop this in your repo's `.github/workflows/`. It runs the static security sweep at
+# `--env=ci` (which defers destructive/adversarial checks to staging) and the wired
+# adversarial proofs you've promoted into `tests/security/`. Every confirmed proof then
+# guards every future PR forever. The sweep's non-zero exit (any open applicable check)
+# fails the build.
+#
+# Proof -> regression: when you wire an adversarial template and it passes, copy it into
+# `tests/security/` (the pytest `assets` fixture + $BEDROCK_TOKEN_A/B make it self-wiring).
+# It now runs here on every PR -- a fixed vuln can never silently come back.
+
+name: bedrock-security
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4            # TODO: pin to a commit SHA (bedrock DEP-003)
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: bedrock static sweep (env=ci, gates on open items)
+        run: |
+          pip install pyyaml
+          # TODO: set the path to the checked-out bedrock-security skill:
+          python "${BEDROCK:-path/to/bedrock-security}/engine/sweep.py" . --env ci
+
+      # --- wired adversarial proofs become permanent regressions ---
+      - name: security tests (python)
+        if: ${{ hashFiles('tests/security/**/*.py') != '' }}
+        env:
+          BEDROCK_TOKEN_A: ${{ secrets.BEDROCK_TOKEN_A }}
+          BEDROCK_TOKEN_B: ${{ secrets.BEDROCK_TOKEN_B }}
+        run: |
+          pip install pytest httpx
+          pytest -p no:randomly tests/security && pytest -p randomly tests/security   # TEST-ISO-001
+
+      - name: security tests (node)
+        if: ${{ hashFiles('tests/security/**/*.test.ts') != '' }}
+        run: |
+          npm ci
+          npx vitest run tests/security

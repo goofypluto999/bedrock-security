@@ -83,7 +83,7 @@ All additive — absent assets ⇒ templates fall back to their TODO defaults.
 ## The console (live local app)
 
 ```bash
-python engine/server.py [TARGET_DIR] [--port 8765] [--no-open] [--run-commands]
+python engine/server.py [TARGET_DIR] [--env ENV] [--port 8765] [--no-open] [--run-commands]
 ```
 
 `server.py` reuses this engine and adds a **live UI** (`../ui/index.html`, served at
@@ -99,6 +99,14 @@ python engine/server.py [TARGET_DIR] [--port 8765] [--no-open] [--run-commands]
 Same `registry.yaml`, same `evaluate()`, same gate as the headless runner — the
 console is just the watch-it-happen surface over it. Stdlib `http.server` + SSE; the
 only dependency is still PyYAML.
+
+**Phase D:** the console is now DAG/stage/env-aware — cards stream in topological order
+tagged with their stage (Frame → Static → Dynamic-Passive → Dynamic-Adversarial → LLM →
+Decision), a header **env selector** (all/pre-commit/ci/preview/staging/prod) re-scopes
+the run live (`BLOCKED(env)` for checks that don't belong there), and a **"next safest
+action"** hint drives the next step. **Proof → regression:** `templates/_ci/bedrock-
+security.yml` runs the gated sweep (`--env ci`) + your wired adversarial proofs on every
+PR, so a fixed vuln can never silently return.
 
 ---
 

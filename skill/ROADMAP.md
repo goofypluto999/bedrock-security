@@ -163,8 +163,13 @@ domains `email-dns-tls` + `billing-entitlement`. Checks: SCOPE-001, DATA-SAFETY-
 NEXT-RSC-001, ANALYTICS-PII-001, EDGE-MW-001, DMARC-001, CERT-001, DNS-001, BILLING-WEBHOOK-001,
 ENTITLEMENT-001, CACHE-TENANT-001, ADMIN-001, LLM-BLIND-001, RAG-TENANT-001.
 
-**Phase D — proof & UX:** the 7-stage DAG console in `server.py`; the fix-it scaffolder; the
-proof→regression test-runner wrapper; the clean-floor benchmark.
+**Phase D — proof & UX** ✅ DONE: the console (`server.py` + `ui/`) is now DAG/stage/env-aware —
+cards stream in topological order tagged by stage, a live **env selector** re-scopes the run
+(`BLOCKED(env)`), and a **"next safest action"** hint drives the next step. `templates/_ci/
+bedrock-security.yml` runs the gated sweep + wired proofs on every PR (proof → regression).
+
+> **All four phases shipped.** The flat 76-check list is now a dependency-ordered,
+> environment-aware, asset-driven, **91-check security operating system** with a live console.
 
 Each phase is independently shippable and reversible. Missing schema keys default to safe, so the
 current 76-check tool keeps working at every step.
