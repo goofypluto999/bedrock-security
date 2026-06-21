@@ -41,6 +41,8 @@ meta:
     - deps-supplychain     # dependency audit, lockfiles, pinned actions, secret-scan
     - deploy-ops           # deploy target, fail-mode, rollback, multi-worker, smoke
     - client-exposure      # frontend/build-time leakage (client env, localStorage, source maps)
+    - email-dns-tls        # SPF/DKIM/DMARC, TLS/HSTS posture, subdomain takeover
+    - billing-entitlement  # payment-webhook state transitions, paid-feature entitlement forging
   # Proof methods — the "answer/test system" each check resolves through.
   methods:
     - inventory          # produce an enumeration artifact (Stage 0)
@@ -1778,3 +1780,372 @@ checks:
     fail_action: Class-2. Add the scanners to CI and make high/critical fail the build.
     ref: references/more-controls.md#6
     source: "intake 2026-06-18 ACS corpus (integrating-sast/dast, secret-scanning-in-ci-cd, sca-dependency-scanning)"
+
+  # =========================================================================
+  # PHASE C — IN additions (from the multi-LLM council blueprint; see ROADMAP.md)
+  #   ~15 checks a real Vercel/Supabase/Stripe SaaS actually bleeds from.
+  # =========================================================================
+
+  - id: SCOPE-001
+    title: Authorized scope, environments, accounts, and rate caps are defined
+    domain: deploy-ops
+    phase: decision
+    severity: high
+    method: decision
+    oracle: [internal framework]
+    applicability:
+      question: Will any live/dynamic check run against a deployed target?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        Record the authorized targets (which URLs/environments), the test accounts/tenants, the
+        rate/concurrency caps, and an explicit "we own / are authorized to test this" sign-off.
+        No adversarial or dynamic check should run until SCOPE-001 is recorded.
+    pass_criteria: A scope record exists (targets, environments, accounts, caps, authorization).
+    fail_action: Define scope before any live test. Unauthorised testing is the line you do not cross.
+    ref: references/secrets-and-ops.md#4
+    source: "council 2026-06-21 (GPT voice-1 Stage-0 safety gate)"
+
+  - id: DATA-SAFETY-001
+    title: Test blast-radius classified (mutate / email / pay / LLM / webhook)
+    domain: deploy-ops
+    phase: decision
+    severity: high
+    method: decision
+    oracle: [internal framework]
+    applicability:
+      question: Could any check mutate data, send email/SMS, hit payments, call an LLM, or fire webhooks?
+      auto_probe:
+        type: manual
+    proof:
+      description: >
+        For the selected environment, classify whether tests may mutate data, send messages, create
+        billing events, call paid models, or trigger external webhooks -- and confirm a rollback/
+        snapshot exists. Destructive / cost / external-side-effect checks stay OFF until classified.
+    pass_criteria: Blast-radius is classified per check family; a rollback path is confirmed.
+    fail_action: Classify before running; default destructive / cost / external checks to OFF.
+    ref: references/secrets-and-ops.md#1
+    source: "council 2026-06-21 (GPT voice-1 Stage-0 safety gate)"
+
+  - id: SBA-ANON-001
+    title: Supabase anon key present but a table is missing RLS (instant DB compromise)
+    domain: access-control
+    phase: static
+    severity: critical
+    method: static-scan
+    oracle: [OWASP API1:2023, CWE-284]
+    applicability:
+      question: Does the app expose a Supabase anon key to the client?
+      auto_probe:
+        type: grep_present
+        patterns: ['NEXT_PUBLIC_SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY', 'createClient\([^)]*ANON', 'SUPABASE_ANON_KEY']
+        langs: [ts, js]
+    proof:
+      description: >
+        The anon key is public BY DESIGN -- its only protection is Row-Level Security. A single table
+        without RLS = the whole table readable/writable by anyone via the client SDK. PROVE every
+        table reachable by the anon role has RLS enabled (pg_class.relrowsecurity) and a policy.
+        Adversarially: with the anon key, attempt to read another tenant's row -> must fail.
+      templates:
+        supabase-postgres: templates/supabase-postgres/anon_rls_audit.sql
+    pass_criteria: Every anon-reachable table has RLS enabled + a restricting policy; anon cannot read cross-tenant rows.
+    fail_action: Class-1 (critical). Enable RLS on every table + a USING/WITH CHECK policy. The #1 Supabase launch gap.
+    ref: references/hardening-playbook.md#1
+    source: "council 2026-06-21 (Gemini voice-2 serverless; reel5 Supabase guide)"
+
+  - id: NEXT-RSC-001
+    title: React Server Component leaks DB objects / PII to the client
+    domain: client-exposure
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [OWASP API3:2023, CWE-200]
+    applicability:
+      question: Does the app use the Next.js App Router (React Server Components)?
+      auto_probe:
+        type: grep_present
+        patterns: ['use client', 'createServerComponent', 'async function \w*Page\(', 'app/.*/page\.tsx']
+        langs: [ts, js]
+    proof:
+      description: >
+        Passing a whole DB record (user, account, order) from a server component into a client
+        component prop serialises it into the page's __next_f script -- exposing password hashes,
+        internal flags, and PII in the HTML. PROVE server components pass only the fields the client
+        needs (a DTO), never a raw ORM row, across a "use client" boundary.
+      templates:
+        typescript-node: templates/typescript-node/rsc_leak.test.ts
+    pass_criteria: No raw DB object crosses a server -> client component boundary; only explicit DTOs.
+    fail_action: Class-1/2. Map the row to a minimal DTO before passing it to a client component.
+    ref: references/more-controls.md#8
+    source: "council 2026-06-21 (Gemini voice-2 Next.js realities)"
+
+  - id: ANALYTICS-PII-001
+    title: Analytics / telemetry does not receive secrets or high-risk PII
+    domain: client-exposure
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [CWE-201, OWASP A09:2021]
+    applicability:
+      question: Does the app send events to analytics / session-replay / error tools?
+      auto_probe:
+        type: grep_present
+        patterns: ['posthog\.capture', 'mixpanel\.track', 'analytics\.(track|identify)', 'Sentry\.(captureException|setUser)', 'datadog', 'amplitude']
+        langs: [ts, js]
+    proof:
+      description: >
+        Plant a known secret/PII (token, email, card) into an event payload path and assert it is NOT
+        sent to PostHog/Sentry/Segment/etc. Session-replay (full DOM capture) is the worst offender --
+        mask inputs. Reuse the same secret scrubber as logs.
+    pass_criteria: No secret/PII format reaches an analytics/replay/error sink; sensitive inputs masked.
+    fail_action: Class-2. Scrub event payloads; enable replay masking; don't identify() with PII you don't need.
+    ref: references/ai-llm-security.md#3
+    source: "council 2026-06-21 (GPT voice-1 ANALYTICS-PII)"
+
+  - id: EDGE-MW-001
+    title: Edge / Next middleware auth cannot be bypassed (matcher / casing / rewrite)
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API1:2023, CWE-287]
+    applicability:
+      question: Does the app enforce auth in Next.js middleware / edge functions by URL path?
+      auto_probe:
+        type: grep_present
+        patterns: ['export function middleware', 'export const config = \{[^}]*matcher', 'NextResponse\.(redirect|rewrite)', 'middleware\.(ts|js)']
+        langs: [ts, js]
+    proof:
+      description: >
+        Middleware gating `/dashboard/:path*` by matcher is bypassable via casing (/Dashboard),
+        trailing slashes, path traversal, internal rewrites, or a matcher gap. Fuzz the restricted
+        routes with these tricks as an unauthenticated client -> every variant stays blocked (redirect/
+        401), never served.
+      templates:
+        typescript-node: templates/typescript-node/edge_mw_bypass.test.ts
+    pass_criteria: Every casing/slash/rewrite/traversal variant of a protected route is blocked for an unauthenticated client.
+    fail_action: Class-1. Enforce authz in the route handler too (defence in depth); normalise paths; widen the matcher.
+    ref: references/hardening-playbook.md#1
+    source: "council 2026-06-21 (Gemini voice-2 Edge middleware)"
+
+  - id: DMARC-001
+    title: Email authentication configured (SPF + DKIM + DMARC)
+    domain: email-dns-tls
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [RFC 7489]
+    applicability:
+      question: Does the product send email from its own domain?
+      auto_probe:
+        type: command
+        command: 'checkdmarc $BEDROCK_DOMAIN'
+        absent_status: NEEDS-PROOF
+    proof:
+      description: >
+        SPF, DKIM, and DMARC records exist; DMARC policy is at least quarantine/reject on the
+        production domain -- otherwise your transactional / password-reset emails are spoofable.
+    pass_criteria: SPF + DKIM + DMARC present; DMARC p=quarantine or reject.
+    fail_action: Class-2. Publish the DNS records; move DMARC to quarantine then reject.
+    ref: references/more-controls.md#2
+    source: "council 2026-06-21 (GPT voice-1 DMARC)"
+
+  - id: CERT-001
+    title: TLS certificate + HSTS posture is strong
+    domain: email-dns-tls
+    phase: static
+    severity: medium
+    method: static-scan
+    oracle: [OWASP A02:2021]
+    applicability:
+      question: Does the app serve over HTTPS on its own domain?
+      auto_probe:
+        type: command
+        command: 'testssl.sh --quiet --severity HIGH $BEDROCK_URL'
+        fallback_command: 'sslyze $BEDROCK_DOMAIN'
+        absent_status: NEEDS-PROOF
+    proof:
+      description: >
+        Valid cert chain, no weak TLS versions/ciphers (no TLS < 1.2, no RC4/3DES), and HSTS set on
+        the production app domain.
+    pass_criteria: TLS 1.2+ only, strong ciphers, valid chain, HSTS present.
+    fail_action: Class-2. Disable weak protocols/ciphers; add HSTS.
+    ref: references/hardening-playbook.md#7
+    source: "council 2026-06-21 (GPT voice-1 CERT)"
+
+  - id: DNS-001
+    title: No dangling DNS records / subdomain takeover
+    domain: email-dns-tls
+    phase: static
+    severity: high
+    method: static-scan
+    oracle: [CWE-350]
+    applicability:
+      question: Does the product use custom / preview subdomains pointing at third-party services?
+      auto_probe:
+        type: command
+        command: 'subzy run --target $BEDROCK_DOMAIN'
+        fallback_command: 'subjack -d $BEDROCK_DOMAIN'
+        absent_status: NEEDS-PROOF
+    proof:
+      description: >
+        No CNAME points at an unclaimed third-party service (S3/Vercel/Heroku/etc.); no stale preview/
+        custom-domain record an attacker could claim and serve content from your subdomain.
+    pass_criteria: Zero dangling / claimable subdomain records.
+    fail_action: Class-1/2. Remove the dangling record or reclaim the resource.
+    ref: references/more-controls.md#1
+    source: "council 2026-06-21 (GPT voice-1 DNS)"
+
+  - id: BILLING-WEBHOOK-001
+    title: Billing provider webhook state transitions are safe
+    domain: billing-entitlement
+    phase: adversarial
+    severity: critical
+    method: adversarial-test
+    oracle: [OWASP API6:2023]
+    applicability:
+      question: Does a payment-provider webhook (Stripe/Paddle/LemonSqueezy) grant or change entitlement?
+      auto_probe:
+        type: grep_present
+        patterns: ['checkout\.session\.completed', 'customer\.subscription', 'invoice\.payment', 'paddle.*webhook', 'lemonsqueezy', 'stripe.*webhook']
+        langs: [ts, js, py]
+    proof:
+      description: >
+        Beyond signature verification (WEBHOOK-001): out-of-order events must not grant the wrong
+        entitlement; duplicate events are idempotent; cancel/downgrade/refund/dispute correctly REVOKE
+        access. Replay an old `subscription.updated` after a cancel -> access stays revoked.
+      templates:
+        typescript-node: templates/typescript-node/billing_webhook.test.ts
+    pass_criteria: Entitlement matches the true subscription state under out-of-order, duplicate, and revoke events.
+    fail_action: Class-1. Derive access from the provider's current state (or ordered events), not the latest webhook blindly.
+    ref: references/more-controls.md#2
+    source: "council 2026-06-21 (GPT voice-1 BILLING-WEBHOOK)"
+
+  - id: ENTITLEMENT-001
+    title: Paid-feature access cannot be forged
+    domain: billing-entitlement
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API1:2023, OWASP API6:2023]
+    applicability:
+      question: Does the app gate features by plan / entitlement?
+      auto_probe:
+        type: grep_present
+        patterns: ['is_?pro', 'isPremium', 'entitlement', 'hasAccess', 'subscription', 'plan\s*[=:]', 'tier']
+        langs: [ts, js, py]
+    proof:
+      description: >
+        A free/lower-tier identity tries to use a paid feature by (a) flipping a client-side plan flag,
+        (b) calling the gated API directly, (c) using tenant B's subscription id. The server must check
+        entitlement from a trusted source on every gated action -> all three denied.
+      templates:
+        python-fastapi: templates/python-fastapi/test_entitlement.py
+    pass_criteria: Paid actions are server-side entitlement-checked; client flags and cross-tenant subscription ids are ignored.
+    fail_action: Class-1. Check entitlement server-side from the billing source of truth, per request.
+    ref: references/hardening-playbook.md#1
+    source: "council 2026-06-21 (GPT voice-1 ENTITLEMENT)"
+
+  - id: CACHE-TENANT-001
+    title: Cache keys are tenant-scoped (no cross-tenant cache bleed)
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API1:2023, CWE-524]
+    applicability:
+      question: Does the app cache per-user / per-tenant responses or data (Redis, CDN, in-memory, SWR)?
+      auto_probe:
+        type: grep_present
+        patterns: ['cache\.(get|set)', 'unstable_cache', 'revalidate', 'Cache-Control', 'memoize', 'redis']
+        langs: [ts, js, py]
+    proof:
+      description: >
+        A cache key missing the tenant/user dimension serves tenant A's response to tenant B. Request a
+        cacheable resource as A, then as B with the same path -> B must NOT receive A's cached body.
+        Confirm CDN/edge cache keys include the auth dimension, or the route is private/no-store.
+      templates:
+        typescript-node: templates/typescript-node/cache_tenant.test.ts
+    pass_criteria: Every per-tenant cache key includes the tenant/user; no cross-tenant cache hit.
+    fail_action: Class-1. Add tenant/user to the cache key, or mark per-user responses private/no-store.
+    ref: references/hardening-playbook.md#1
+    source: "council 2026-06-21 (GPT voice-1 CACHE-TENANT)"
+
+  - id: ADMIN-001
+    title: Admin routes require a server-side admin role
+    domain: access-control
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP API5:2023]
+    applicability:
+      question: Are there admin / internal / back-office routes?
+      auto_probe:
+        type: grep_present
+        patterns: ['/admin', 'isAdmin', 'is_admin', 'requireAdmin', 'AdminGuard', 'role.*admin']
+        langs: [ts, js, py]
+    proof:
+      description: >
+        A normal user token hits every admin/internal route -> 403. A support-tier role cannot reach
+        owner-only controls. The admin check is server-side, not a hidden UI route. This is the
+        admin-plane specialisation of BFLA-001.
+      templates:
+        python-fastapi: templates/python-fastapi/test_bfla.py
+        typescript-node: templates/typescript-node/bfla.test.ts
+    pass_criteria: Every admin route rejects a non-admin token (403) server-side.
+    fail_action: Class-1. Enforce the admin role in the handler, server-side, on every admin route.
+    ref: references/security-testing-methodology.md#5
+    source: "council 2026-06-21 (GPT voice-1 ADMIN; folds into BFLA)"
+
+  - id: LLM-BLIND-001
+    title: LLM tools cannot be steered at internal infra (blind SSRF via the model)
+    domain: llm-ai
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP LLM01:2025, CWE-918]
+    applicability:
+      question: Does an LLM have a tool that fetches a URL / makes an outbound request?
+      auto_probe:
+        type: grep_present
+        patterns: ['fetch_url', 'web_search', 'browse', 'tools\s*[=:]\s*\[', 'function.*url']
+        langs: [ts, js, py]
+    proof:
+      description: >
+        A fetch/browse tool with no egress filtering lets a user prompt the model to read
+        169.254.169.254 (cloud metadata), localhost, or internal services -- SSRF laundered through the
+        model. Prompt the model to fetch internal targets via its tool -> the tool layer rejects them
+        (the SSRF-001 allowlist), regardless of what the model decides.
+      templates:
+        python-fastapi: templates/python-fastapi/test_llm_blind_ssrf.py
+    pass_criteria: The LLM's fetch tool enforces the SSRF allowlist (resolved-IP, no metadata/private), independent of the prompt.
+    fail_action: Class-1. Apply SSRF-001's egress validation inside the tool, not via the prompt.
+    ref: references/more-controls.md#1
+    source: "council 2026-06-21 (Gemini voice-2 LLM-BLIND)"
+
+  - id: RAG-TENANT-001
+    title: RAG retrieval is tenant-scoped (no cross-tenant document leak)
+    domain: llm-ai
+    phase: adversarial
+    severity: high
+    method: adversarial-test
+    oracle: [OWASP LLM06:2025, OWASP API1:2023]
+    applicability:
+      question: Does the app do RAG / vector retrieval over tenant documents?
+      auto_probe:
+        type: grep_present
+        patterns: ['pgvector', 'pinecone', 'similarity_search', 'embedding', 'retriev', '\.query\([^)]*top_k']
+        langs: [ts, js, py]
+    proof:
+      description: >
+        Vector search without a tenant filter returns tenant B's documents to tenant A -- and a prompt
+        injection ("ignore the filter") must not remove it, because the filter is enforced server-side,
+        not by the model. As tenant A, ask a question whose answer lives in tenant B's corpus -> no B
+        snippet is retrieved or cited.
+      templates:
+        python-fastapi: templates/python-fastapi/test_rag_tenant.py
+    pass_criteria: Retrieval filters by tenant/permission server-side; no cross-tenant snippet is ever returned, even under injection.
+    fail_action: Class-1. Filter the vector query by tenant at the DB/index layer; never rely on the prompt.
+    ref: references/ai-llm-security.md#1
+    source: "council 2026-06-21 (GPT + Gemini RAG-TENANT)"

@@ -157,9 +157,11 @@ enforcement. The existing 76 gained ordering + safety with zero behavior change 
 templates read it (the pytest `assets` fixture auto-wires `user_a`/`user_b`); shipped `seed_bedrock.sql`
 + the Stripe fixture; `ledger.json` enriched with `expected` + `generated_unix`.
 
-**Phase C — the ~15 IN checks:** add them to the registry in their stages with deps, `safety`, oracles,
-and (for adversarial ones) a per-stack proof template. Start with the highest-leverage trio:
-`SBA-ANON-001`, `NEXT-RSC-001`, `EDGE-MW-001`.
+**Phase C — the ~15 IN checks** ✅ DONE: all 15 added (registry now **91 checks**) with their stage,
+deps, env/safety, oracles, and proof templates (8 new + ADMIN-001 reusing the BFLA templates). New
+domains `email-dns-tls` + `billing-entitlement`. Checks: SCOPE-001, DATA-SAFETY-001, SBA-ANON-001,
+NEXT-RSC-001, ANALYTICS-PII-001, EDGE-MW-001, DMARC-001, CERT-001, DNS-001, BILLING-WEBHOOK-001,
+ENTITLEMENT-001, CACHE-TENANT-001, ADMIN-001, LLM-BLIND-001, RAG-TENANT-001.
 
 **Phase D — proof & UX:** the 7-stage DAG console in `server.py`; the fix-it scaffolder; the
 proof→regression test-runner wrapper; the clean-floor benchmark.

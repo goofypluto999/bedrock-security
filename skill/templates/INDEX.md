@@ -3,12 +3,14 @@
 Runnable, oracle-anchored adversarial-test templates per stack. Copy the template for a
 check, wire it to the real routes/models from the frame (Stage 0), and run it until green.
 Each is a *falsifiable* test that actively tries to break the control — never happy-path.
+Phase B: the pytest `assets` fixture auto-wires `user_a`/`user_b` from `.bedrock/assets.json`
++ `$BEDROCK_TOKEN_A/B`; `seed_bedrock.sql` + `_fixtures/bedrock-stripe-fixture.json` seed the suite.
 
 **Status:** `✓` authored · `QUEUED` declared but not yet written · `—` not a meaningful
 standalone proof for that stack. The runner reads these paths from `engine/registry.yaml`
 and flags any `QUEUED` one in the ledger, so a gap is always visible, never silent.
 
-**All 54 of 54 declared templates are authored** (33 checks carry at least
+**All 64 of 64 declared templates are authored** (42 checks carry at least
 one proof template). Static-scan and decision checks are proven by the runner or a documented
 decision and need no template.
 
@@ -47,17 +49,24 @@ decision and need no template.
 | **NOSQLI-001** | — | ✓ `nosql_injection.test.ts` | — |
 | **PAGINATION-001** | ✓ `test_pagination.py` | — | — |
 | **ERRORLEAK-001** | ✓ `test_error_sanitization.py` | — | — |
+| **SBA-ANON-001** | — | — | ✓ `anon_rls_audit.sql` |
+| **NEXT-RSC-001** | — | ✓ `rsc_leak.test.ts` | — |
+| **EDGE-MW-001** | — | ✓ `edge_mw_bypass.test.ts` | — |
+| **BILLING-WEBHOOK-001** | — | ✓ `billing_webhook.test.ts` | — |
+| **ENTITLEMENT-001** | ✓ `test_entitlement.py` | — | — |
+| **CACHE-TENANT-001** | — | ✓ `cache_tenant.test.ts` | — |
+| **ADMIN-001** | ✓ `test_bfla.py` | ✓ `bfla.test.ts` | — |
+| **LLM-BLIND-001** | ✓ `test_llm_blind_ssrf.py` | — | — |
+| **RAG-TENANT-001** | ✓ `test_rag_tenant.py` | — | — |
 
 ## Stack notes
 - **python-fastapi** — pytest + httpx; shared fixtures + the test-isolation discipline live in
-  `conftest.py` (StaticPool DB, autouse store resets, two identities A/B). All templates byte-compile.
-- **typescript-node** — vitest + supertest; works for Express / Fastify / Next API routes. A few
-  client-exposure checks (CLIENT-ENV, AUTH-STORAGE) scan the built bundle / storage instead of an endpoint.
+  `conftest.py` (StaticPool DB, autouse store resets, two identities A/B, the Phase-B `assets` fixture).
+- **typescript-node** — vitest + supertest; works for Express / Fastify / Next API routes.
 - **supabase-postgres** — psql / SQL-editor scripts that assert via `raise exception`, wrapped in
-  `begin; … rollback;`; run against TEST/STAGING only (reads stay read-only on live data).
+  `begin; … rollback;`; run against TEST/STAGING only. `seed_bedrock.sql` seeds tenant A/B + rows.
 
 ## Adding more
 A new adversarial check ships with at least one stack template (or is flagged QUEUED here and in
 the ledger — never silently template-less). To turn a video/short/image into a check + template,
-see `../MEDIA-INTAKE.md`. Pattern to follow: any authored template above (e.g. `test_bola.py`,
-`test_ssrf.py`, `bola.test.ts`, `bola_rls.sql`).
+see `../MEDIA-INTAKE.md`.

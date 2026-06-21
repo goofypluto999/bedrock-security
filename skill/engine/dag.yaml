@@ -98,6 +98,23 @@ checks:
   # ---- Decision / verdict ----
   DEPLOY-GATE-001: {requires: [INV-007]}
 
+  # ---- Phase C additions ----
+  SCOPE-001: {}
+  DATA-SAFETY-001: {}
+  SBA-ANON-001: {requires: [INV-005]}
+  NEXT-RSC-001: {requires: [INV-001]}
+  ANALYTICS-PII-001: {}
+  EDGE-MW-001: {requires: [INV-001], environments: [preview, staging]}
+  DMARC-001: {environments: [ci, preview, staging, prod]}
+  CERT-001: {environments: [preview, staging, prod]}
+  DNS-001: {environments: [ci, preview, staging, prod]}
+  BILLING-WEBHOOK-001: {requires: [INV-003, WEBHOOK-001], environments: [staging], safety: {needs_seed_data: true, external_side_effect: true, safe_in_prod: false}}
+  ENTITLEMENT-001: {requires: [INV-001, INV-005], environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  CACHE-TENANT-001: {requires: [INV-001, INV-005], environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  ADMIN-001: {requires: [INV-001], environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  LLM-BLIND-001: {requires: [INV-006], environments: [staging], safety: {cost_generating: true, external_side_effect: true, safe_in_prod: false}}
+  RAG-TENANT-001: {requires: [INV-006, INV-005], environments: [staging], safety: {cost_generating: true, needs_seed_data: true, safe_in_prod: false}}
+
   # (Static checks — SEC-LEAK, ENV-*, PATTERN-*, DEP-*, FLOOR-*, CLIENT-ENV, REDOS,
   #  CISEC, TEST-ISO, DOC-FRESH, DEC-*, TRIAGE, APIINV — are intentionally unlisted:
   #  defaults give them no deps, all environments, readonly — exactly right.)
