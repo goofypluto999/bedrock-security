@@ -38,6 +38,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -48,6 +49,11 @@ except ImportError:
         "       Install it with:  pip install pyyaml\n"
     )
     sys.exit(2)
+
+try:
+    import assets as _assets  # Phase B: emit/read .bedrock/assets.json (additive)
+except Exception:
+    _assets = None
 
 # --------------------------------------------------------------------------- #
 # Repo walking
@@ -501,6 +507,7 @@ def main() -> int:
         res["requires"] = meta["requires"]
         res["environments"] = meta["environments"]
         res["safety"] = meta["safety"]
+        res["expected"] = check.get("pass_criteria")   # evidence schema: observed (evidence) vs expected
         done[cid] = res
 
     results = [done[c["id"]] for c in checks]  # preserve registry order in the ledger
@@ -518,6 +525,7 @@ def main() -> int:
         "stacks": stacks,
         "env": args.env,
         "registry_version": reg.get("meta", {}).get("registry_version"),
+        "generated_unix": int(time.time()),
         "verdict": "GREEN" if green else "RED",
         "total": len(results),
         "open": len(open_items),
@@ -526,6 +534,10 @@ def main() -> int:
     }
     (out_dir / "ledger.json").write_text(json.dumps(ledger, indent=2), encoding="utf-8")
     (out_dir / "LEDGER.md").write_text(render_markdown(results, stacks, root, green), encoding="utf-8")
+
+    # Phase B: Stage-1 FRAME emits the asset map the adversarial templates consume.
+    if _assets is not None:
+        _assets.write_assets(out_dir, _assets.build_assets(results, stacks, str(root)))
 
     if not args.json_only:
         c = {s: sum(1 for r in results if r["status"] == s) for s in STATUS_ORDER}

@@ -149,12 +149,13 @@ Wiz/Snyk/CNAPP, the K8s toolchain, the SBOM/sign chain, Jira/ticket sync.
 
 ## 6. The build roadmap — 4 phases, each shippable, all back-compat
 
-**Phase A — DAG engine** (the biggest leap): add `requires/provides/blocks_if_fail/environments/
-safety` to the schema; `graphlib` topological run + `BLOCKED` propagation in `sweep.py`; `--env`
-enforcement. *(No new checks; the existing 76 immediately gain ordering + safety.)*
+**Phase A — DAG engine** ✅ DONE (`da36b6d`): `requires/provides/blocks_if_fail/environments/safety`
+overlay (`engine/dag.yaml`); `graphlib` topological run + `BLOCKED` propagation in `sweep.py`; `--env`
+enforcement. The existing 76 gained ordering + safety with zero behavior change at `--env=all`.
 
-**Phase B — Assets & fixtures:** rewrite Stage-1 FRAME to emit `.bedrock/assets.json`; templates read
-it via a loader; ship `seed_bedrock.sql` + the Stripe fixture; enrich `ledger.json` to the evidence schema.
+**Phase B — Assets & fixtures** ✅ DONE: Stage-1 FRAME emits `.bedrock/assets.json` (`engine/assets.py`);
+templates read it (the pytest `assets` fixture auto-wires `user_a`/`user_b`); shipped `seed_bedrock.sql`
++ the Stripe fixture; `ledger.json` enriched with `expected` + `generated_unix`.
 
 **Phase C — the ~15 IN checks:** add them to the registry in their stages with deps, `safety`, oracles,
 and (for adversarial ones) a per-stack proof template. Start with the highest-leverage trio:

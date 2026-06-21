@@ -63,16 +63,43 @@ def reset_global_stores():
     # TODO: clear again on teardown.
 
 
-@pytest.fixture
-def user_a(client):
-    """Seed identity A and return {id, token, headers}. TODO: real signup/login."""
-    raise NotImplementedError
+@pytest.fixture(scope="session")
+def assets():
+    """Phase B — load `.bedrock/assets.json` (emitted by the sweep's FRAME stage) so tests
+    read real routes/tenants/token-envs instead of hardcoding. Returns {} if it hasn't run
+    yet, in which case the templates fall back to their TODO defaults."""
+    import json
+    from pathlib import Path
+    for d in [Path.cwd(), *Path.cwd().parents]:
+        c = d / ".bedrock" / "assets.json"
+        if c.exists():
+            return json.loads(c.read_text(encoding="utf-8"))
+    return {}
+
+
+def _identity(assets: dict, key: str) -> dict:
+    """Build a test identity from assets.json tenants.<key> + its token env var."""
+    import os
+    t = (assets.get("tenants") or {}).get(key) or {}
+    env = t.get("token_env", f"BEDROCK_TOKEN_{key}")
+    token = os.environ.get(env, "")
+    if not token:
+        raise NotImplementedError(
+            f"Set ${env} to a real tenant-{key} access token (or wire this fixture to signup/login)."
+        )
+    return {"id": t.get("id"), "token": token, "headers": {"Authorization": f"Bearer {token}"}}
 
 
 @pytest.fixture
-def user_b(client):
-    """Seed a SECOND identity B — the attacker in every authz test."""
-    raise NotImplementedError
+def user_a(assets):
+    """Identity A — auto-wires from assets.json + $BEDROCK_TOKEN_A when present."""
+    return _identity(assets, "A")
+
+
+@pytest.fixture
+def user_b(assets):
+    """Identity B — the attacker in every authz test; auto-wires from $BEDROCK_TOKEN_B."""
+    return _identity(assets, "B")
 
 
 def auth(headers_token: str) -> dict:

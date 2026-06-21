@@ -1,0 +1,23 @@
+{
+  "_meta": "Phase B — Stripe TEST-MODE fixtures for WEBHOOK-001 / BILLING-WEBHOOK-001. Generate with:  stripe fixtures bedrock-stripe-fixture.json  (test mode only). It creates a customer + subscription tied to bedrock-tenant-A; the webhook tests then attack the resulting events: replay (old timestamp), duplicate event id, and stripped/forged signature. Set ${PRICE_ID} to a test price. NEVER run against a live Stripe account.",
+  "fixtures": [
+    {
+      "name": "bedrock_customer_a",
+      "path": "/v1/customers",
+      "method": "post",
+      "params": {
+        "email": "bedrock-tenant-a@example.com",
+        "metadata": { "tenant": "11111111-1111-1111-1111-111111111111" }
+      }
+    },
+    {
+      "name": "bedrock_subscription_a",
+      "path": "/v1/subscriptions",
+      "method": "post",
+      "params": {
+        "customer": "${bedrock_customer_a:id}",
+        "items": [ { "price": "${PRICE_ID}" } ]
+      }
+    }
+  ]
+}

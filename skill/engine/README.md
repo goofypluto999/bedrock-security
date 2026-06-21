@@ -6,6 +6,7 @@ The machinery that turns the playbook into an executed, evidence-backed sweep.
 engine/
   registry.yaml   the single source of truth — every check as a structured record
   dag.yaml        Phase-A overlay — per-check requires/provides/environments/safety (ordering + rails)
+  assets.py       Phase-B asset map — FRAME emits .bedrock/assets.json; templates read it
   sweep.py        the runner — frames the surface, runs probes, emits the gated ledger
   server.py       the live console (browser UI) over the same engine
   README.md       this file
@@ -61,6 +62,23 @@ python engine/sweep.py <target> --env prod    # only readonly/safe-in-prod check
 failed or it isn't allowed in the chosen environment. It does **not** turn the verdict RED
 (the gate stays: GREEN ⇔ no FAIL and no NEEDS-PROOF) — re-run in the right `--env`, or fix
 the failed dependency, to resolve it.
+
+## Phase B — the asset map + seed fixtures
+
+Stage-1 FRAME now emits **`.bedrock/assets.json`** (`engine/assets.py`): the auto-detected
+surface map — where routes, token types, outbound fetches, tenant resources, LLM surfaces,
+secrets (NAMES only), and deploy targets live (file:line, from the inventory checks'
+evidence) — plus a `tenants` A/B convention and `items` arrays the agent/FRAME enriches with
+the specifics a test needs.
+
+The proof templates **read it** instead of hardcoding: the pytest `assets` fixture
+(`templates/python-fastapi/conftest.py`) auto-wires `user_a`/`user_b` from
+`assets.json.tenants` + `$BEDROCK_TOKEN_A/B`. Seed fixtures make the adversarial suite
+runnable — `templates/supabase-postgres/seed_bedrock.sql` (tenant A/B + owned rows + a quota
+row, rollback-wrapped) and `templates/_fixtures/bedrock-stripe-fixture.json` (test-mode
+customer+subscription for the webhook tests). `ledger.json` gains `expected` (the
+pass-criteria) alongside the captured `evidence` (observed) + a `generated_unix` stamp.
+All additive — absent assets ⇒ templates fall back to their TODO defaults.
 
 ## The console (live local app)
 
