@@ -5,7 +5,9 @@ The machinery that turns the playbook into an executed, evidence-backed sweep.
 ```
 engine/
   registry.yaml   the single source of truth — every check as a structured record
+  dag.yaml        Phase-A overlay — per-check requires/provides/environments/safety (ordering + rails)
   sweep.py        the runner — frames the surface, runs probes, emits the gated ledger
+  server.py       the live console (browser UI) over the same engine
   README.md       this file
 ```
 
@@ -32,6 +34,33 @@ python engine/sweep.py [TARGET_DIR] [--out DIR] [--run-commands] [--registry PAT
 Outputs `LEDGER.md` (human) and `ledger.json` (machine) in the out dir.
 
 Dependency: `pip install pyyaml`. Everything else is Python stdlib.
+
+## The execution DAG + environment rails (Phase A)
+
+`registry.yaml` says *what* each check is; **`dag.yaml`** (an overlay merged by check id)
+says *when and where* it runs. A check absent from the overlay defaults to **no
+dependencies, all environments, readonly-safe** — so the flat registry stays 100%
+back-compatible.
+
+Overlay fields: `requires` (run after these; the check is **BLOCKED** if a required check
+FAILs with `blocks_if_fail`, or is itself BLOCKED) · `provides` (asset keys an inventory
+check emits — consumed for real in Phase B) · `blocks_if_fail` · `environments` (where it
+may run) · `safety{}` (`destructive` / `cost_generating` / `needs_seed_data` / `readonly` /
+`safe_in_prod` / `external_side_effect`).
+
+The runner topologically sorts by `requires` (stdlib `graphlib`) and enforces `--env`:
+
+```bash
+python engine/sweep.py <target>               # --env=all (default): run everything (back-compat)
+python engine/sweep.py <target> --env ci      # static + inventory only; adversarial/dynamic -> BLOCKED(env)
+python engine/sweep.py <target> --env staging # everything, incl. the seeded adversarial suite
+python engine/sweep.py <target> --env prod    # only readonly/safe-in-prod checks; rest BLOCKED(env)
+```
+
+`BLOCKED` is a 5th ledger status (not FAIL): a check that couldn't run because a dependency
+failed or it isn't allowed in the chosen environment. It does **not** turn the verdict RED
+(the gate stays: GREEN ⇔ no FAIL and no NEEDS-PROOF) — re-run in the right `--env`, or fix
+the failed dependency, to resolve it.
 
 ## The console (live local app)
 

@@ -1,0 +1,103 @@
+# =============================================================================
+#  DAG + SAFETY OVERLAY  (Phase A — turns the flat registry into an ordered graph)
+# =============================================================================
+#  The runner (sweep.py) merges this onto registry.yaml BY CHECK ID. Any check not
+#  listed here — or any field omitted — uses `defaults` below. So an unannotated
+#  registry behaves EXACTLY like the flat version: 100% back-compat.
+#
+#  Per-check fields:
+#    requires:        [ids]   ordered AFTER these; BLOCKED if a required check FAILs
+#                             (when that check has blocks_if_fail) or is itself BLOCKED.
+#    provides:        [keys]  asset keys an inventory check produces (informational in A;
+#                             consumed for real in Phase B's assets.json).
+#    blocks_if_fail:  bool    on FAIL, propagate BLOCKED to everything that requires me.
+#    environments:    [envs]  where this may run; enforced when --env is set (not 'all').
+#    safety: {destructive, cost_generating, needs_seed_data, readonly, safe_in_prod,
+#             external_side_effect}   metadata + the prod rail.
+# =============================================================================
+
+meta:
+  schema: dag-overlay/1
+  environments: [pre-commit, ci, preview, staging, prod]
+
+defaults:
+  requires: []
+  provides: []
+  blocks_if_fail: false
+  environments: [pre-commit, ci, preview, staging, prod]
+  safety: {destructive: false, cost_generating: false, needs_seed_data: false, readonly: true, safe_in_prod: true, external_side_effect: false}
+
+checks:
+  # ---- FRAME / inventory: produce assets; run anywhere; readonly ----
+  INV-001: {provides: [routes], blocks_if_fail: true}
+  INV-002: {provides: [token_types], blocks_if_fail: true}
+  INV-003: {provides: [external_fetches], blocks_if_fail: true}
+  INV-004: {provides: [secrets]}
+  INV-005: {provides: [tenant_resources, datastores], blocks_if_fail: true}
+  INV-006: {provides: [llm_surfaces], blocks_if_fail: true}
+  INV-007: {provides: [deploy_targets]}
+  INV-008: {provides: [stacks]}
+
+  # ---- Access control / multi-tenancy (need route+tenant map; seeded; staging) ----
+  AUTHN-REQUIRED-001: {requires: [INV-001], blocks_if_fail: true, environments: [preview, staging]}
+  AUTHZ-SERVER-001:   {requires: [INV-001], environments: [preview, staging]}
+  BOLA-001: {requires: [INV-001, INV-005, AUTHN-REQUIRED-001], environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  BFLA-001: {requires: [INV-001], environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  MASS-001: {requires: [INV-001], environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  EXCESSDATA-001: {requires: [INV-001], environments: [preview, staging]}
+  PATHTRAV-001: {requires: [INV-001], environments: [staging], safety: {safe_in_prod: false}}
+  REDIRECT-001: {requires: [INV-001], environments: [preview, staging]}
+  WEBSOCKET-001: {requires: [INV-001], environments: [staging], safety: {safe_in_prod: false}}
+  PAGINATION-001: {requires: [INV-001], environments: [preview, staging]}
+  SUPABASE-RLS-001: {requires: [INV-005], environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  TENANT-DEL-001: {requires: [INV-005], environments: [staging], safety: {destructive: true, needs_seed_data: true, safe_in_prod: false}}
+  AUDIT-001: {requires: [INV-005], environments: [staging]}
+
+  # ---- AuthN / session / JWT (need token map; staging) ----
+  JWT-001: {requires: [INV-002], blocks_if_fail: true, environments: [staging], safety: {safe_in_prod: false}}
+  JWT-002: {requires: [INV-002, JWT-001], environments: [staging], safety: {safe_in_prod: false}}
+  TOKEN-ROTATE-001: {requires: [INV-002], environments: [staging], safety: {safe_in_prod: false}}
+  OAUTH-001: {requires: [INV-002], environments: [staging], safety: {external_side_effect: true, safe_in_prod: false}}
+  PWPOLICY-001: {requires: [INV-002], environments: [staging], safety: {safe_in_prod: false}}
+  LOCK-001: {requires: [INV-002], environments: [staging], safety: {destructive: true, safe_in_prod: false}}
+  ACCT-VERIFY-001: {requires: [INV-002], environments: [staging], safety: {external_side_effect: true, safe_in_prod: false}}
+  COOKIE-FLAGS-001: {requires: [INV-002], environments: [preview, staging, prod]}
+  AUTH-STORAGE-001: {requires: [INV-002], environments: [preview, staging]}
+  CSRF-001: {requires: [INV-002], environments: [staging]}
+  TIMING-001: {requires: [INV-003], environments: [staging]}
+
+  # ---- Rate / abuse (load-generating / destructive; staging) ----
+  RATE-001: {requires: [INV-001], environments: [staging], safety: {destructive: true, safe_in_prod: false}}
+  RACE-001: {requires: [INV-005, IDEM-001], environments: [staging], safety: {destructive: true, needs_seed_data: true, safe_in_prod: false}}
+
+  # ---- SSRF / webhook / idempotency (need fetch map; staging) ----
+  SSRF-001: {requires: [INV-003], environments: [staging], safety: {external_side_effect: true, safe_in_prod: false}}
+  WEBHOOK-001: {requires: [INV-003], blocks_if_fail: true, environments: [staging], safety: {needs_seed_data: true, safe_in_prod: false}}
+  IDEM-001: {requires: [INV-003, WEBHOOK-001], environments: [staging], safety: {destructive: true, needs_seed_data: true, safe_in_prod: false}}
+
+  # ---- Injection / input (staging; SIZE gate before fuzzing) ----
+  SIZE-001: {requires: [INV-001], environments: [preview, staging], safety: {safe_in_prod: false}}
+  INJ-001: {requires: [INV-001, SIZE-001], environments: [staging], safety: {safe_in_prod: false}}
+  XXE-001: {requires: [INV-001], environments: [staging], safety: {safe_in_prod: false}}
+  SSTI-001: {requires: [INV-001], environments: [staging], safety: {safe_in_prod: false}}
+  NOSQLI-001: {requires: [INV-001], environments: [staging], safety: {safe_in_prod: false}}
+  HOSTHDR-001: {requires: [INV-001], environments: [preview, staging]}
+
+  # ---- Dynamic-passive (running app; the truly passive ones are prod-readonly safe) ----
+  HDR-001: {requires: [INV-001], environments: [preview, staging, prod]}
+  HDR-002: {requires: [INV-001], environments: [preview, staging, prod]}
+  CLICKJACK-001: {requires: [INV-001], environments: [preview, staging, prod]}
+  SOURCEMAP-001: {environments: [preview, staging, prod]}
+  ERRORLEAK-001: {requires: [INV-001], environments: [preview, staging]}
+
+  # ---- LLM / AI (cost-generating; staging only) ----
+  LLM-INJ-001: {requires: [INV-006], environments: [staging], safety: {cost_generating: true, safe_in_prod: false}}
+  LLM-OUT-001: {requires: [INV-006], environments: [staging], safety: {cost_generating: true, safe_in_prod: false}}
+  LLM-FAILOPEN-001: {requires: [INV-006], environments: [staging], safety: {cost_generating: true, safe_in_prod: false}}
+
+  # ---- Decision / verdict ----
+  DEPLOY-GATE-001: {requires: [INV-007]}
+
+  # (Static checks — SEC-LEAK, ENV-*, PATTERN-*, DEP-*, FLOOR-*, CLIENT-ENV, REDOS,
+  #  CISEC, TEST-ISO, DOC-FRESH, DEC-*, TRIAGE, APIINV — are intentionally unlisted:
+  #  defaults give them no deps, all environments, readonly — exactly right.)

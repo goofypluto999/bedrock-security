@@ -32,6 +32,7 @@ Dependency: PyYAML (pip install pyyaml). Everything else is stdlib.
 from __future__ import annotations
 
 import argparse
+import graphlib
 import json
 import os
 import re
@@ -325,11 +326,56 @@ def run_command_probe(cmd: str, cwd: Path, fallback: str | None):
 
 
 # --------------------------------------------------------------------------- #
+# DAG + safety overlay (Phase A) — ordering, BLOCKED propagation, env rails
+# --------------------------------------------------------------------------- #
+
+DEFAULT_ENVS = ["pre-commit", "ci", "preview", "staging", "prod"]
+DEFAULT_SAFETY = {"destructive": False, "cost_generating": False, "needs_seed_data": False,
+                  "readonly": True, "safe_in_prod": True, "external_side_effect": False}
+
+
+def load_dag(path: Path) -> dict:
+    """Load the DAG/safety overlay; absent file -> empty (pure back-compat)."""
+    if not path.exists():
+        return {"defaults": {}, "checks": {}}
+    d = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {"defaults": d.get("defaults") or {}, "checks": d.get("checks") or {}}
+
+
+def dag_for(check_id: str, dag: dict) -> dict:
+    """Merge defaults + per-check overlay for one check id (omitted fields -> safe defaults)."""
+    out = {"requires": [], "provides": [], "blocks_if_fail": False,
+           "environments": list(DEFAULT_ENVS), "safety": dict(DEFAULT_SAFETY)}
+    for layer in (dag.get("defaults") or {}, (dag.get("checks") or {}).get(check_id) or {}):
+        for k, v in layer.items():
+            if k == "safety" and isinstance(v, dict):
+                out["safety"].update(v)
+            else:
+                out[k] = v
+    return out
+
+
+def blocked_result(check: dict, meta: dict, reason: str) -> dict:
+    """A result skeleton for a check that never ran (env- or dependency-BLOCKED)."""
+    return {
+        "id": check["id"], "title": check.get("title", check["id"]),
+        "domain": check.get("domain"), "phase": check.get("phase"),
+        "severity": check.get("severity"), "method": check.get("method"),
+        "oracle": check.get("oracle", []), "ref": check.get("ref"),
+        "fail_action": check.get("fail_action"), "applicable": "unknown",
+        "status": "BLOCKED", "confidence": "n/a", "evidence": [], "templates": {},
+        "note": reason, "requires": meta["requires"],
+        "environments": meta["environments"], "safety": meta["safety"],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Ledger rendering
 # --------------------------------------------------------------------------- #
 
-STATUS_ORDER = {"FAIL": 0, "NEEDS-PROOF": 1, "NA": 2, "PASS": 3}
-STACK_LABEL = {"FAIL": "[FAIL]", "NEEDS-PROOF": "[OPEN]", "NA": "[N/A ]", "PASS": "[PASS]"}
+STATUS_ORDER = {"FAIL": 0, "NEEDS-PROOF": 1, "BLOCKED": 2, "NA": 3, "PASS": 4}
+STACK_LABEL = {"FAIL": "[FAIL]", "NEEDS-PROOF": "[OPEN]", "BLOCKED": "[BLOK]",
+               "NA": "[N/A ]", "PASS": "[PASS]"}
 
 
 def render_markdown(results: list[dict], stacks: list[str], root: Path, green: bool) -> str:
@@ -345,7 +391,7 @@ def render_markdown(results: list[dict], stacks: list[str], root: Path, green: b
     lines.append(f"- Verdict: **{'GREEN — all applicable checks proven' if green else 'RED — applicable checks remain open'}**")
     lines.append(
         f"- Tally: FAIL {counts.get('FAIL',0)} · OPEN {counts.get('NEEDS-PROOF',0)} · "
-        f"N/A {counts.get('NA',0)} · PASS {counts.get('PASS',0)} "
+        f"BLOCKED {counts.get('BLOCKED',0)} · N/A {counts.get('NA',0)} · PASS {counts.get('PASS',0)} "
         f"(of {len(results)} checks)\n"
     )
     if not green:
@@ -403,6 +449,9 @@ def main() -> int:
     ap.add_argument("--registry", default=str(Path(__file__).with_name("registry.yaml")))
     ap.add_argument("--run-commands", action="store_true",
                     help="opt-in: execute command probes (gitleaks, pip-audit, pytest, ...)")
+    ap.add_argument("--env", default="all",
+                    choices=["all", "pre-commit", "ci", "preview", "staging", "prod"],
+                    help="enforce environment safety rails; 'all' (default) runs every check (back-compat)")
     ap.add_argument("--json-only", action="store_true", help="suppress stdout summary")
     args = ap.parse_args()
 
@@ -417,10 +466,49 @@ def main() -> int:
     corpus = Corpus(root)
     stacks = detect_stacks(corpus)
 
-    results = [evaluate(c, corpus, stacks, args.run_commands) for c in checks]
+    # --- Phase A: DAG-ordered evaluation with BLOCKED propagation + env rails ---
+    dag = load_dag(Path(args.registry).with_name("dag.yaml"))
+    by_id = {c["id"]: c for c in checks}
+    dag_map = {cid: dag_for(cid, dag) for cid in by_id}
+    graph = {cid: {r for r in dag_map[cid]["requires"] if r in by_id} for cid in by_id}
+    try:
+        order = list(graphlib.TopologicalSorter(graph).static_order())
+    except graphlib.CycleError:
+        order = list(by_id)  # defensive: fall back to registry order
+
+    done: dict[str, dict] = {}
+    for cid in order:
+        check, meta = by_id[cid], dag_map[cid]
+        # env rail: a check may only run in the selected environment
+        if args.env != "all" and args.env not in meta["environments"]:
+            done[cid] = blocked_result(check, meta,
+                f"BLOCKED(env): runs in {'/'.join(meta['environments'])}, not --env={args.env}")
+            continue
+        # dependency rail: a required check that FAILed (with blocks_if_fail) or is BLOCKED blocks this one
+        block = None
+        for req in meta["requires"]:
+            pr = done.get(req)
+            if pr is None:
+                continue
+            if pr["status"] == "BLOCKED":
+                block = f"{req} is BLOCKED"; break
+            if pr["status"] == "FAIL" and dag_map[req]["blocks_if_fail"]:
+                block = f"{req} FAILED"; break
+        if block:
+            done[cid] = blocked_result(check, meta, f"BLOCKED(dep): requires {block}")
+            continue
+        res = evaluate(check, corpus, stacks, args.run_commands)
+        res["requires"] = meta["requires"]
+        res["environments"] = meta["environments"]
+        res["safety"] = meta["safety"]
+        done[cid] = res
+
+    results = [done[c["id"]] for c in checks]  # preserve registry order in the ledger
 
     # The gate: GREEN only if no applicable check is FAIL or NEEDS-PROOF.
+    # BLOCKED is "couldn't run here" (dep unmet or wrong --env) — deferred, not failing.
     open_items = [r for r in results if r["status"] in ("FAIL", "NEEDS-PROOF")]
+    blocked_items = [r for r in results if r["status"] == "BLOCKED"]
     green = len(open_items) == 0
 
     out_dir = Path(args.out) if args.out else (root / ".bedrock")
@@ -428,10 +516,12 @@ def main() -> int:
     ledger = {
         "target": str(root),
         "stacks": stacks,
+        "env": args.env,
         "registry_version": reg.get("meta", {}).get("registry_version"),
         "verdict": "GREEN" if green else "RED",
         "total": len(results),
         "open": len(open_items),
+        "blocked": len(blocked_items),
         "results": results,
     }
     (out_dir / "ledger.json").write_text(json.dumps(ledger, indent=2), encoding="utf-8")
@@ -440,8 +530,8 @@ def main() -> int:
     if not args.json_only:
         c = {s: sum(1 for r in results if r["status"] == s) for s in STATUS_ORDER}
         print(f"\nBedrock sweep :: {root}")
-        print(f"  stack(s): {', '.join(stacks)}")
-        print(f"  FAIL {c['FAIL']}  OPEN {c['NEEDS-PROOF']}  N/A {c['NA']}  PASS {c['PASS']}  (of {len(results)})")
+        print(f"  stack(s): {', '.join(stacks)}   env: {args.env}")
+        print(f"  FAIL {c['FAIL']}  OPEN {c['NEEDS-PROOF']}  BLOCKED {c['BLOCKED']}  N/A {c['NA']}  PASS {c['PASS']}  (of {len(results)})")
         print(f"  ledger : {out_dir / 'LEDGER.md'}")
         verdict = "GREEN — all applicable checks proven" if green else "RED — applicable checks remain OPEN"
         print(f"  VERDICT: {verdict}")
@@ -449,6 +539,8 @@ def main() -> int:
             print("\n  Open items the agent/you must close with evidence (PROTOCOL.md):")
             for r in sorted(open_items, key=lambda r: (STATUS_ORDER[r["status"]], str(r["severity"]))):
                 print(f"    {STACK_LABEL[r['status']]} {r['id']:<16} {r['severity']:<8} {r['title']}")
+        if blocked_items:
+            print(f"\n  {len(blocked_items)} BLOCKED (unmet deps or wrong --env) — see ledger; re-run with the right --env.")
 
     return 0 if green else 1
 
