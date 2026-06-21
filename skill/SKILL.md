@@ -1,6 +1,10 @@
 ---
 name: bedrock-security
 description: >
+  RUN IT, don't just advise — this is an executable security PROGRAM (engine + live
+  console UI + 76 checks + per-stack proof templates). When it fires, your first action
+  is to run engine/server.py (live console) or engine/sweep.py against the project and
+  drive the ledger to proven; do NOT hand over security advice from memory.
   Second-order application security playbook — the hardening, testing, and
   decision-making that comes AFTER the obvious OWASP/checklist pass. Auto-fire
   whenever the user is setting up, reviewing, hardening, or testing the security
@@ -50,6 +54,48 @@ triggers:
   - api security
 ---
 
+> ## ▶▶ THIS IS A PROGRAM — RUN IT. Act before you advise.
+>
+> **If you are about to give security advice, write a checklist, or summarize OWASP —
+> STOP.** This skill is an executable security system, not a reading. Your FIRST action
+> is to RUN it against the user's project and produce a real, evidence-backed ledger.
+> A response that never runs the engine is a FAILED use of this skill — that is the
+> shallow "here are some tips" outcome this skill exists to replace.
+>
+> ### Step 0 — launch it NOW  (`TARGET` = the project's directory, usually the cwd)
+>
+> ```bash
+> # Live console — opens a browser UI the user watches (PREFERRED — gives them the app):
+> python ~/.claude/skills/bedrock-security/engine/server.py "TARGET"
+> #   -> http://127.0.0.1:8765 : walks all 76 checks live, user approves, proofs stream
+>
+> # Headless — gated ledger for CI / a quick run (no browser):
+> python ~/.claude/skills/bedrock-security/engine/sweep.py "TARGET"
+> #   -> writes TARGET/.bedrock/LEDGER.md ; exit code != 0 while anything is unproven
+> ```
+> Windows literal path: `C:\Users\giova\.claude\skills\bedrock-security\...`. One
+> dependency: `pip install pyyaml`. **Always use the absolute skill path above** so it
+> runs from inside any project. Run it with the Bash/PowerShell tool — actually run it.
+>
+> ### Step 1 — DRIVE the ledger to proven (this is the real work; see `PROTOCOL.md`)
+>
+> The engine FRAMES the surface; YOU prove it. Open `.bedrock/LEDGER.md` and:
+> - **Every FAIL → triage by reading the flagged `file:line`.** Real bug (Class 1/2) →
+>   fix it. False positive (Class 4 — a test placeholder, an ORM `==`, a word in a
+>   comment) → dismiss with the reason. **NEVER forward a raw grep FAIL as a vulnerability.**
+> - **Every NEEDS-PROOF adversarial check → PROVE it:** copy its template from
+>   `~/.claude/skills/bedrock-security/templates/<stack>/`, wire it to the real
+>   routes/models, run it, drive it green.
+> - **Every NEEDS-PROOF decision → decide + record** (fail-open/closed + a kill-switch).
+> - Re-run the engine until GREEN, or every remaining open item is an explicit,
+>   on-the-record human acceptance. Completion bar = `PROTOCOL.md §7`.
+>
+> ### You have FAILED this skill if:
+> no engine run · no ledger · no console offered · a checklist handed over instead of a
+> proven sweep · or a grep FAIL reported as a real vuln without reading the code.
+
+---
+
 # Bedrock Security
 
 **The security layer that comes *after* the obvious checks.**
@@ -62,15 +108,11 @@ production.
 
 ## How to use this skill — run the system, don't freestyle
 
-This skill is an **executable enforcement system**, not just a reading. When the
-task is a security sweep / audit / hardening / "is this secure?", you run it:
-
-> **Two ways to run it:**
-> - **The console (live local app):** `python engine/server.py <target>` opens a UI in
->   the browser that walks **every** check live — green = applies, red = N/A, amber =
->   judgement — lets you **ADD / REMOVE / approve** the selection, then runs the proofs
->   on the approved set, all streamed. Same registry, same gate. (`ui/index.html`.)
-> - **Headless:** `python engine/sweep.py <target>` for CI / a one-shot gated ledger.
+This skill is an **executable enforcement system**, not just a reading. You already have
+the run commands in **Step 0 above** (`engine/server.py` for the live console,
+`engine/sweep.py` for a headless gated ledger) — always invoke them with the absolute
+`~/.claude/skills/bedrock-security/...` path so they run from inside any project. The
+steps below are the procedure you DRIVE once the engine has produced a ledger.
 
 1. **Drive it with `PROTOCOL.md`.** The forced, ordered procedure — Frame →
    Applicability → Static → Adversarial → Decision → Triage → Verdict. Top to bottom;
