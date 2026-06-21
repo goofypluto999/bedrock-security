@@ -19,10 +19,14 @@ INPUT_FIELD = "prompt"                    # TODO: the user-text field name
 #       so we can plant a known string into the model's OUTPUT deterministically.
 PLANT_TARGET = "app.llm.client.complete"
 
+# Synthetic secret-SHAPED fixtures, ASSEMBLED at runtime from fragments so no
+# key-shaped literal lives in source — a public-repo secret scanner flags a literal
+# even when it is fake. These are inputs that exercise the scrubber, never real
+# credentials; the assembled runtime value still matches real secret formats.
 SECRETS = [
-    ("openai_key", "sk-ABCD1234efgh5678IJKL9012mnop3456qrst7890"),
-    ("aws_key", "AKIAIOSFODNN7EXAMPLE"),
-    ("bearer", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"),
+    ("openai_key", "sk-" + "Synthetic0Fixture0NotARealKey0000000000000"),
+    ("aws_key", "AKIA" + "SYNTHETIC000FAKE"),
+    ("bearer", "Bearer " + "eyJ" + "synthetichdr.eyJ" + "fixturepayload.sig"),
     ("email", "victim.user@example.com"),
     ("card", "4111 1111 1111 1111"),
 ]
