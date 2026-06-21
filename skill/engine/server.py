@@ -225,6 +225,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(_a.build_assets(list(STATE["results"].values()), STATE["stacks"], STATE["target"]))
             except Exception as e:  # pragma: no cover
                 self._json({"error": str(e)}, 500)
+        elif path in ("/report", "/report.html"):
+            try:
+                import report as _r
+                results = [STATE["results"][cid] for cid in STATE["order"] if cid in STATE["results"]]
+                openn = sum(1 for x in results if x["status"] in ("FAIL", "NEEDS-PROOF"))
+                led = {"target": STATE["target"], "env": STATE["env"],
+                       "verdict": "GREEN" if (results and openn == 0) else "RED",
+                       "open": openn, "generated_unix": int(time.time()), "results": results}
+                body = _r.build_report_html(led).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:  # pragma: no cover
+                self._json({"error": str(e)}, 500)
         elif path == "/api/triage/stream":
             self.stream_triage()
         elif path == "/api/run/stream":

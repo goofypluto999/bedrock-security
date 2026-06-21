@@ -62,37 +62,50 @@ triggers:
 > A response that never runs the engine is a FAILED use of this skill — that is the
 > shallow "here are some tips" outcome this skill exists to replace.
 >
-> ### Step 0 — launch it NOW  (`TARGET` = the project's directory, usually the cwd)
+> ### Step 0 — LAUNCH THE CONSOLE so the user SEES the app  (`TARGET` = the project dir)
+>
+> The console is a **blocking** server — start it in the **BACKGROUND** (your background-run
+> tool, or a trailing `&`). If you run it in the foreground it hangs you and you fall back to
+> the headless runner and **the user sees nothing**. Launching it opens the user's browser.
 >
 > ```bash
-> # Live console — opens a browser UI the user watches (PREFERRED — gives them the app):
-> python ~/.claude/skills/bedrock-security/engine/server.py "TARGET"
-> #   -> http://127.0.0.1:8765 : walks all 76 checks live, user approves, proofs stream
+> # LIVE CONSOLE — RUN IN THE BACKGROUND; it opens the user's browser. THIS is the app.
+> python ~/.claude/skills/bedrock-security/engine/server.py "TARGET" &
+> #   -> http://127.0.0.1:8765  — the user watches the live triage, APPROVES the selection,
+> #      watches the run, and clicks "Open full audit report". Tell them to look at the browser.
 >
-> # Headless — gated ledger for CI / a quick run (no browser):
+> # HEADLESS (CI / no browser) — also writes the report:
 > python ~/.claude/skills/bedrock-security/engine/sweep.py "TARGET"
-> #   -> writes TARGET/.bedrock/LEDGER.md ; exit code != 0 while anything is unproven
+> #   -> TARGET/.bedrock/{LEDGER.md, report.html, assets.json} ; exit != 0 while anything is open
 > ```
-> Windows literal path: `C:\Users\giova\.claude\skills\bedrock-security\...`. One
-> dependency: `pip install pyyaml`. **Always use the absolute skill path above** so it
-> runs from inside any project. Run it with the Bash/PowerShell tool — actually run it.
+> Absolute path always (Windows: `C:\Users\giova\.claude\skills\bedrock-security\...`). One
+> dep: `pip install pyyaml`. **Actually run it** — and if the user wanted the experience but you
+> only ran the headless sweep with no UI and no approval, that is a FAILURE of this skill.
 >
-> ### Step 1 — DRIVE the ledger to proven (this is the real work; see `PROTOCOL.md`)
+> ### Step 1 — DRIVE the ledger to proven (the real work; see `PROTOCOL.md`)
 >
 > The engine FRAMES the surface; YOU prove it. Open `.bedrock/LEDGER.md` and:
-> - **Every FAIL → triage by reading the flagged `file:line`.** Real bug (Class 1/2) →
->   fix it. False positive (Class 4 — a test placeholder, an ORM `==`, a word in a
->   comment) → dismiss with the reason. **NEVER forward a raw grep FAIL as a vulnerability.**
+> - **Every FAIL → triage by reading the flagged `file:line`.** Real bug (Class 1/2) → fix it.
+>   False positive (Class 4 — a test placeholder, an ORM `==`, a word in a comment) → dismiss
+>   with the reason. **NEVER forward a raw grep FAIL as a vulnerability.**
 > - **Every NEEDS-PROOF adversarial check → PROVE it:** copy its template from
->   `~/.claude/skills/bedrock-security/templates/<stack>/`, wire it to the real
->   routes/models, run it, drive it green.
+>   `~/.claude/skills/bedrock-security/templates/<stack>/`, wire it to the real routes, run it.
 > - **Every NEEDS-PROOF decision → decide + record** (fail-open/closed + a kill-switch).
-> - Re-run the engine until GREEN, or every remaining open item is an explicit,
->   on-the-record human acceptance. Completion bar = `PROTOCOL.md §7`.
+> - Re-run until GREEN, or every open item is an on-the-record human acceptance. Bar = `PROTOCOL.md §7`.
+>
+> ### Step 2 — DELIVER THE AUDIT REPORT (never a wall of text)
+>
+> Every run writes **`TARGET/.bedrock/report.html`** — a polished, visual audit report (verdict,
+> status/severity/domain breakdown, every finding with evidence + the fix, the next actions).
+> **Open it for the user** (or point them at the console's "Open full audit report" button).
+> Then, IN CHAT, give a **decision-ready VISUAL summary** — render the `visualize` widget /
+> a progress-dashboard, NOT a vague paragraph: verdict · proven vs open · the real findings ·
+> the fixes shipped · the ONE next action. A plain text recap is a FAILED delivery.
 >
 > ### You have FAILED this skill if:
-> no engine run · no ledger · no console offered · a checklist handed over instead of a
-> proven sweep · or a grep FAIL reported as a real vuln without reading the code.
+> the console was never launched / the user never saw the UI · there was no approval step ·
+> no `report.html` was produced or opened · you handed back a vague text recap instead of the
+> visual audit report · no engine run · or a grep FAIL reported as a real vuln without reading it.
 
 ---
 

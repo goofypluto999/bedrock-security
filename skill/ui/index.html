@@ -263,6 +263,7 @@ $('#btn-approve').onclick = async () => {
       v.textContent = m.green
         ? `✓ GREEN — every approved check proven (PASS ${m.counts.PASS} · N/A ${m.counts.NA}${blk})`
         : `✗ RED — ${m.open} open: FAIL ${m.counts.FAIL} · needs-proof ${m.counts['NEEDS-PROOF']} · PASS ${m.counts.PASS}${blk}`;
+      v.innerHTML += ' <a href="/report.html" target="_blank" style="color:var(--teal);font-weight:600;font-size:13px;margin-left:14px;text-decoration:none">Open full audit report ▸</a>';
       v.scrollIntoView({behavior:'smooth'});
       $('#hint').textContent = m.blocked ? `Close OPEN items; ${m.blocked} blocked — switch env to run them.` : 'Close OPEN items with evidence (templates / fixes), then re-run.';
     }

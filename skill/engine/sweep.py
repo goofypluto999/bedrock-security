@@ -55,6 +55,11 @@ try:
 except Exception:
     _assets = None
 
+try:
+    import report as _report  # the polished HTML audit report (additive)
+except Exception:
+    _report = None
+
 # --------------------------------------------------------------------------- #
 # Repo walking
 # --------------------------------------------------------------------------- #
@@ -538,6 +543,9 @@ def main() -> int:
     # Phase B: Stage-1 FRAME emits the asset map the adversarial templates consume.
     if _assets is not None:
         _assets.write_assets(out_dir, _assets.build_assets(results, stacks, str(root)))
+    # The polished HTML audit report — every run ends with an openable report, not a text wall.
+    if _report is not None:
+        (out_dir / "report.html").write_text(_report.build_report_html(ledger), encoding="utf-8")
 
     if not args.json_only:
         c = {s: sum(1 for r in results if r["status"] == s) for s in STATUS_ORDER}
@@ -545,6 +553,7 @@ def main() -> int:
         print(f"  stack(s): {', '.join(stacks)}   env: {args.env}")
         print(f"  FAIL {c['FAIL']}  OPEN {c['NEEDS-PROOF']}  BLOCKED {c['BLOCKED']}  N/A {c['NA']}  PASS {c['PASS']}  (of {len(results)})")
         print(f"  ledger : {out_dir / 'LEDGER.md'}")
+        print(f"  REPORT : {out_dir / 'report.html'}   <- open this in a browser")
         verdict = "GREEN — all applicable checks proven" if green else "RED — applicable checks remain OPEN"
         print(f"  VERDICT: {verdict}")
         if not green:
